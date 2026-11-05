@@ -17,10 +17,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -37,6 +39,7 @@ import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.SettingsBluetooth
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -59,6 +62,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.hydranet.opensteves.data.Chapter
@@ -87,6 +91,7 @@ internal fun TogetherScreen(
     val installed by repository.installed.collectAsState()
     var paired by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
     var showingPaired by rememberSaveable { mutableStateOf(false) }
+    var showAllPaired by rememberSaveable { mutableStateOf(false) }
     var pairedLoaded by remember { mutableStateOf(false) }
     var pendingPermission by remember { mutableStateOf<(() -> Unit)?>(null) }
     var confirmRole by remember { mutableStateOf<String?>(null) }
@@ -104,7 +109,7 @@ internal fun TogetherScreen(
     }
     fun refreshPaired() {
         withBluetooth {
-            paired = session.pairedDevices()
+            paired = session.pairedDevices(includeAll = showAllPaired)
             pairedLoaded = true
             showingPaired = true
         }
@@ -210,11 +215,25 @@ internal fun TogetherScreen(
                     Text("Choose a paired phone that is hosting.", Modifier.padding(top = 10.dp), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
                 }
                 Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Paired phones", Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = colors.onSurfaceVariant)
+                    Text(if (showAllPaired) "Paired devices" else "Paired phones and tablets", Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = colors.onSurfaceVariant)
                     TextButton(shape = MaterialTheme.shapes.small, onClick = ::refreshPaired) { Text("Refresh") }
                 }
-                paired.forEach { (address, name) -> SessionPhone(name, "Paired phone", onJoin = { withBluetooth { session.join(address) } }) }
-                if (pairedLoaded && paired.isEmpty()) Text("No paired phones found. Pair with the host in Bluetooth settings, then refresh.", Modifier.padding(20.dp), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+                paired.forEach { (address, name) -> SessionPhone(name, if (showAllPaired) "Paired device" else "Paired phone or tablet", onJoin = { withBluetooth { session.join(address) } }) }
+                if (pairedLoaded && paired.isEmpty()) Text(
+                    if (showAllPaired) "No paired devices found. Pair with the host in Bluetooth settings, then refresh."
+                    else "No paired phones or tablets found. If your host is missing, show all paired devices or pair it in Bluetooth settings.",
+                    Modifier.padding(20.dp), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant,
+                )
+                Row(
+                    Modifier.fillMaxWidth().heightIn(min = 48.dp).toggleable(value = showAllPaired, role = Role.Checkbox, onValueChange = {
+                        showAllPaired = it
+                        refreshPaired()
+                    }).padding(horizontal = 20.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(checked = showAllPaired, onCheckedChange = null)
+                    Text("Show all paired devices", Modifier.padding(start = 12.dp), style = MaterialTheme.typography.bodyMedium)
+                }
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(shape = MaterialTheme.shapes.small, onClick = ::openBluetoothSettings, modifier = Modifier.fillMaxWidth().height(48.dp)) {
                         Icon(Icons.Outlined.SettingsBluetooth, null, Modifier.size(20.dp))

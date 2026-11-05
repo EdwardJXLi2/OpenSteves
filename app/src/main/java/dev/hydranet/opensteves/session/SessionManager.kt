@@ -3,6 +3,7 @@ package dev.hydranet.opensteves.session
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothClass
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothServerSocket
@@ -70,8 +71,14 @@ class SessionManager private constructor(private val context: Context) {
         this.playback = playback
     }
 
-    fun pairedDevices(): List<Pair<String, String>> = try {
+    fun pairedDevices(includeAll: Boolean = false): List<Pair<String, String>> = try {
         if (!hasPermission()) emptyList() else adapter()?.bondedDevices.orEmpty()
+            .filter { device ->
+                includeAll || when (device.bluetoothClass?.majorDeviceClass) {
+                    BluetoothClass.Device.Major.PHONE, BluetoothClass.Device.Major.COMPUTER -> true
+                    else -> false
+                }
+            }
             .map { it.address to (it.name ?: "Paired phone") }.sortedBy { it.second }
     } catch (_: SecurityException) {
         emptyList()
@@ -92,7 +99,7 @@ class SessionManager private constructor(private val context: Context) {
 
     fun join(address: String) {
         if (!canStart()) return
-        if (!BluetoothAdapter.checkBluetoothAddress(address) || pairedDevices().none { it.first == address }) {
+        if (!BluetoothAdapter.checkBluetoothAddress(address) || pairedDevices(includeAll = true).none { it.first == address }) {
             fail("Pair with the host phone in Android Bluetooth settings first.")
             return
         }
