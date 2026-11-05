@@ -32,7 +32,10 @@ import dev.hydranet.opensteves.data.TourRepository
 import dev.hydranet.opensteves.playback.PlaybackConnection
 import dev.hydranet.opensteves.session.SessionManager
 import dev.hydranet.opensteves.ui.theme.AppThemeMode
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 @Composable
 fun TourApp(
@@ -57,6 +60,8 @@ fun TourApp(
     var deletion by remember { mutableStateOf<Tour?>(null) }
     var sharingDialog by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
+    var preparingSessionDownload by remember { mutableStateOf(false) }
+    var sessionDownloadError by remember(group.requiredTourId) { mutableStateOf<String?>(null) }
     val savedScreens = rememberSaveableStateHolder()
     val snackbar = remember { SnackbarHostState() }
     val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -184,6 +189,62 @@ fun TourApp(
                 }
             }
         }
+    }
+    group.requiredTourId?.let { tourId ->
+        val tour = tours.find { it.id == tourId } ?: installed[tourId]?.tour
+        AlertDialog(
+            onDismissRequest = { if (!preparingSessionDownload) session.dismissRequiredTour() },
+            title = { Text("Download tour?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(when {
+                        tour == null -> "You need the host’s tour on this phone to join the session. Download it now, then join again."
+                        installed.containsKey(tourId) -> "Your copy of “${tour.title}” differs from the host’s. Download it again, then rejoin the session."
+                        else -> "You need “${tour.title}” on this phone to join the session. Download it now, then join again."
+                    })
+                    if (preparingSessionDownload) LinearProgressIndicator(Modifier.fillMaxWidth())
+                    sessionDownloadError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                }
+            },
+            confirmButton = {
+                TextButton(shape = MaterialTheme.shapes.small, enabled = !preparingSessionDownload, onClick = {
+                    scope.launch {
+                        preparingSessionDownload = true
+                        sessionDownloadError = null
+                        try {
+                            val available = repository.tours.value.find { it.id == tourId } ?: run {
+                                repository.refreshCatalog()
+                                repository.tours.value.find { it.id == tourId }
+                            }
+                            if (available == null) {
+                                sessionDownloadError = "Could not find this tour. Connect to the internet and try again, or ask the host to update their download."
+                                return@launch
+                            }
+                            if (playback.state.value.tourId == tourId) {
+                                playback.stop()
+                                if (withTimeoutOrNull(5_000) { playback.state.first { it.tourId != tourId } } == null) {
+                                    sessionDownloadError = "Stop this tour in Playing, then try the download again."
+                                    return@launch
+                                }
+                            }
+                            download(available)
+                            session.dismissRequiredTour()
+                            navigate(0)
+                            selectedId = tourId
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            sessionDownloadError = "Could not start the download. Check your connection and try again."
+                        } finally {
+                            preparingSessionDownload = false
+                        }
+                    }
+                }) { Text(if (preparingSessionDownload) "Preparing…" else "Download") }
+            },
+            dismissButton = {
+                TextButton(shape = MaterialTheme.shapes.small, enabled = !preparingSessionDownload, onClick = session::dismissRequiredTour) { Text("Not now") }
+            },
+        )
     }
     if (sharingDialog) {
         val ready = player.durationMs > 0

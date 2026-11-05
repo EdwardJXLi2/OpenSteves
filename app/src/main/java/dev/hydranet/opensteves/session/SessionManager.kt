@@ -222,6 +222,15 @@ class SessionManager private constructor(private val context: Context) {
         mutableState.value = SessionState(error = message)
     }
 
+    private fun requireTour(tourId: Int) {
+        leave()
+        mutableState.value = SessionState(requiredTourId = tourId)
+    }
+
+    fun dismissRequiredTour() {
+        mutableState.value = state.value.copy(requiredTourId = null)
+    }
+
     internal fun serviceDestroyed() {
         if (state.value.role != "none") {
             playback?.pause()
@@ -338,7 +347,7 @@ class SessionManager private constructor(private val context: Context) {
                     require(hostGreeting == null)
                     val audio = decode(message.getJSONObject("audio"))
                     if (playback?.hasAudio(audio.tourId, audio.hash) != true) {
-                        fail("Download the same version of tour #${audio.tourId} as the host, then join again.")
+                        requireTour(audio.tourId)
                         return
                     }
                     hostGreeting = audio
@@ -387,7 +396,7 @@ class SessionManager private constructor(private val context: Context) {
         if (seq <= receivedSequence) return
         val target = decode(message.getJSONObject("audio"))
         if (playback?.hasAudio(target.tourId, target.hash) != true) {
-            fail("The host changed to an unavailable tour. Download tour #${target.tourId}, then join again.")
+            requireTour(target.tourId)
             return
         }
         val hostAt = message.getLong("at")

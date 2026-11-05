@@ -5,6 +5,7 @@ data class SessionState(
     val status: String = "Listen together over Bluetooth",
     val peers: List<String> = emptyList(),
     val error: String? = null,
+    val requiredTourId: Int? = null,
 )
 
 data class PlaybackCommand(val action: String, val positionMs: Long = 0, val speed: Float = 1f)
