@@ -39,6 +39,8 @@ internal fun PlayingScreen(
     playback: PlaybackConnection,
     assetVersion: String?,
     sessionActive: Boolean,
+    fullScreen: Boolean,
+    onFullScreenChange: (Boolean) -> Unit,
     onPlay: (Long?) -> Unit,
 ) {
     val player by playback.state.collectAsState()
@@ -78,66 +80,87 @@ internal fun PlayingScreen(
     val state = if (active) player else PlaybackUiState()
     val chapter = chapters.lastOrNull { state.positionMs >= it.startMs && state.positionMs < it.endMs }
     val caption = captions.lastOrNull { active && state.positionMs >= it.startMs && state.positionMs < it.endMs }
-    BackHandler(tab != 0) { tab = 0 }
+    BackHandler(fullScreen || tab != 0) {
+        if (fullScreen) onFullScreenChange(false) else tab = 0
+    }
 
-    Column(Modifier.fillMaxSize()) {
-        PlayerHeading(tour, repository, chapter, assetVersion)
-        Column(Modifier.padding(horizontal = 20.dp)) {
-            PlayerControls(state, active, canPlay, { onPlay(null) }, playback)
-            if (!canPlay) Text("Leave the current session to play a different tour.", Modifier.padding(vertical = 12.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        SectionTabs(listOf("Chapters", "Map", "Transcript"), tab) { tab = it }
-        if (tab == 0) {
-            LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 16.dp)) {
-                if (caption != null) item {
-                    Surface(Modifier.fillMaxWidth().padding(16.dp), color = MaterialTheme.colorScheme.secondaryContainer, shape = MaterialTheme.shapes.medium) {
-                        Text(caption.text, Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val compact = maxHeight < 400.dp
+        Column(Modifier.fillMaxSize()) {
+            if (!fullScreen) {
+                if (!compact) PlayerHeading(tour, repository, chapter, assetVersion)
+                if (!compact || tab == 0) Column(Modifier.padding(horizontal = 20.dp)) {
+                    PlayerControls(state, active, canPlay, { onPlay(null) }, playback)
+                    if (!canPlay) Text("Leave the current session to play a different tour.", Modifier.padding(vertical = 12.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                SectionTabs(listOf("Chapters", "Map", "Transcript"), tab) { tab = it }
+            }
+            if (tab == 0) {
+                LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 16.dp)) {
+                    if (caption != null) item {
+                        Surface(Modifier.fillMaxWidth().padding(16.dp), color = MaterialTheme.colorScheme.secondaryContainer, shape = MaterialTheme.shapes.medium) {
+                            Text(caption.text, Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
+                        }
                     }
-                }
-                if (chapterResult == null) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
-                if (chapterResult?.isFailure == true) item {
-                    Text("Could not read the saved chapters. Download the tour again to restore them.", Modifier.padding(20.dp), color = MaterialTheme.colorScheme.error)
-                }
-                if (chapterResult?.isSuccess == true && chapters.isEmpty()) item {
-                    Text("No chapters included with this audio.", Modifier.padding(20.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                itemsIndexed(chapters, key = { _, item -> "${item.startMs}-${item.title}" }) { index, item ->
-                    val selected = item == chapter && active
-                    Surface(
-                        onClick = { if (active) playback.seek(item.startMs) else onPlay(item.startMs) },
-                        enabled = canPlay,
-                        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-                    ) {
-                        Row(Modifier.fillMaxWidth().heightIn(min = 58.dp).padding(horizontal = 20.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            if (selected) Icon(Icons.Default.Equalizer, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
-                            else Text((index + 1).toString().padStart(2, '0'), Modifier.width(20.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(item.title, Modifier.weight(1f).padding(horizontal = 14.dp), style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
-                                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
-                            Text(time(item.startMs), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (chapterResult == null) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+                    if (chapterResult?.isFailure == true) item {
+                        Text("Could not read the saved chapters. Download the tour again to restore them.", Modifier.padding(20.dp), color = MaterialTheme.colorScheme.error)
+                    }
+                    if (chapterResult?.isSuccess == true && chapters.isEmpty()) item {
+                        Text("No chapters included with this audio.", Modifier.padding(20.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    itemsIndexed(chapters, key = { _, item -> "${item.startMs}-${item.title}" }) { index, item ->
+                        val selected = item == chapter && active
+                        Surface(
+                            onClick = { if (active) playback.seek(item.startMs) else onPlay(item.startMs) },
+                            enabled = canPlay,
+                            color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                        ) {
+                            Row(Modifier.fillMaxWidth().heightIn(min = 58.dp).padding(horizontal = 20.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                if (selected) Icon(Icons.Default.Equalizer, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
+                                else Text((index + 1).toString().padStart(2, '0'), Modifier.width(20.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(item.title, Modifier.weight(1f).padding(horizontal = 14.dp), style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+                                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                                Text(time(item.startMs), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
                     }
                 }
-            }
-        } else if (tab == 1) Box(Modifier.weight(1f)) {
-            if (mapResult == null) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-            else ZoomableMap(mapResult?.getOrNull(), tour.title)
-        } else Column(Modifier.weight(1f)) {
-            Text("Tour script", Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 4.dp), style = MaterialTheme.typography.titleSmall)
-            if (captionResult == null || transcriptResult == null) LinearProgressIndicator(Modifier.fillMaxWidth())
-            if (captionResult?.isFailure == true || transcriptResult?.isFailure == true) {
-                Text("Could not read saved text. Download the tour again to restore it.", Modifier.padding(20.dp), color = MaterialTheme.colorScheme.error)
-            }
-            if (captions.isNotEmpty()) Text("${captions.size} timed ${if (captions.size == 1) "caption" else "captions"}", Modifier.padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 8.dp),
-                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-            if (captionResult != null && transcriptResult != null) {
-                if (transcript.isEmpty() && captions.isEmpty()) {
-                    EmptyState(Icons.AutoMirrored.Outlined.Subject, "No transcript available", "This tour does not include a transcript.")
-                } else SelectionContainer(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 20.dp)) {
-                    Text(transcript.ifEmpty { captions.joinToString("\n\n") { it.text } }.trim(), style = MaterialTheme.typography.bodyLarge)
+            } else if (tab == 1) Box(Modifier.weight(1f)) {
+                if (mapResult == null) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                else ZoomableMap(mapResult?.getOrNull(), tour.title)
+                Surface(Modifier.align(Alignment.TopEnd).padding(12.dp), shape = MaterialTheme.shapes.small, tonalElevation = 4.dp) {
+                    FullScreenButton(fullScreen) { onFullScreenChange(!fullScreen) }
+                }
+            } else Column(Modifier.weight(1f)) {
+                Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Tour script", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                    FullScreenButton(fullScreen) { onFullScreenChange(!fullScreen) }
+                }
+                if (captionResult == null || transcriptResult == null) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (captionResult?.isFailure == true || transcriptResult?.isFailure == true) {
+                    Text("Could not read saved text. Download the tour again to restore it.", Modifier.padding(20.dp), color = MaterialTheme.colorScheme.error)
+                }
+                if (captions.isNotEmpty()) Text("${captions.size} timed ${if (captions.size == 1) "caption" else "captions"}", Modifier.padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 8.dp),
+                    style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                if (captionResult != null && transcriptResult != null) {
+                    if (transcript.isEmpty() && captions.isEmpty()) {
+                        EmptyState(Icons.AutoMirrored.Outlined.Subject, "No transcript available", "This tour does not include a transcript.")
+                    } else SelectionContainer(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 20.dp)) {
+                        Text(transcript.ifEmpty { captions.joinToString("\n\n") { it.text } }.trim(), style = MaterialTheme.typography.bodyLarge)
+                    }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun FullScreenButton(fullScreen: Boolean, onClick: () -> Unit) {
+    IconButton(onClick = onClick) {
+        Icon(if (fullScreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+            if (fullScreen) "Exit full screen" else "Full screen")
     }
 }
 

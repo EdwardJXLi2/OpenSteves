@@ -115,6 +115,7 @@ fun TourApp(
     val selected = selectedId?.let { id -> tours.find { it.id == id } ?: installed[id]?.tour }
     val current = player.tourId?.let { id -> installed[id]?.tour ?: tours.find { it.id == id } }
     val playingTour = current ?: playerTourId?.let { installed[it]?.tour }
+    var playerFullScreen by rememberSaveable(playingTour?.id, screen, selectedId) { mutableStateOf(false) }
     val darkTheme = when (themeMode) {
         AppThemeMode.SYSTEM -> isSystemInDarkTheme()
         AppThemeMode.LIGHT -> false
@@ -125,7 +126,7 @@ fun TourApp(
         modifier = Modifier.imePadding(),
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
-            TopAppBar(
+            if (!playerFullScreen) TopAppBar(
                 expandedHeight = 56.dp,
                 title = {
                     Text(
@@ -166,7 +167,7 @@ fun TourApp(
             )
         },
         bottomBar = {
-            AppNavigation(selected = when (screen) { 1, 2 -> screen; else -> 0 }, sessionActive = group.role != "none", onSelect = ::navigate)
+            if (!playerFullScreen) AppNavigation(selected = when (screen) { 1, 2 -> screen; else -> 0 }, sessionActive = group.role != "none", onSelect = ::navigate)
         },
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
@@ -177,6 +178,7 @@ fun TourApp(
             } else when (screen) {
                 1 -> if (playingTour != null) savedScreens.SaveableStateProvider("playing") {
                     PlayingScreen(playingTour, repository, playback, installed[playingTour.id]?.directoryName, group.role != "none",
+                        fullScreen = playerFullScreen, onFullScreenChange = { playerFullScreen = it },
                         onPlay = { position -> play(playingTour, position) })
                 } else Column(Modifier.fillMaxSize().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                     EmptyState(Icons.Outlined.Headphones, "Nothing playing", "Start a tour from Explore to listen here.")
