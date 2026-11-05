@@ -169,46 +169,55 @@ fun TourApp(
         modifier = Modifier.imePadding(),
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
-            if (!playerFullScreen) TopAppBar(
-                expandedHeight = 56.dp,
-                title = {
-                    Text(
-                        if (selected != null) "Tour details" else when (screen) {
-                            1 -> "Playing"
-                            2 -> "Together"
-                            else -> "Explore"
-                        },
-                        fontSize = 21.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    )
-                },
-                navigationIcon = {
-                    if (selectedId != null) IconButton(onClick = {
-                        if (selectedId != null) selectedId = null else navigate(0)
-                    }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-                },
-                actions = {
-                    if (selected == null && screen == 0) {
-                        IconButton(onClick = ::refresh, enabled = !refreshing) { Icon(Icons.Default.Refresh, "Refresh tours") }
-                        IconButton(onClick = { onThemeModeChange(if (darkTheme) AppThemeMode.LIGHT else AppThemeMode.DARK) }) {
-                            Icon(if (darkTheme) Icons.Outlined.LightMode else Icons.Outlined.DarkMode, if (darkTheme) "Switch to light theme" else "Switch to dark theme")
-                        }
-                    } else if (selected != null && installed.containsKey(selected.id)) {
-                        IconButton(onClick = {
-                            when {
-                                player.tourId == selected.id && group.role != "none" -> report("End the session and stop this tour before deleting its download.")
-                                player.tourId == selected.id -> report("Stop this tour before deleting its download.")
-                                downloads[selected.id]?.let { it.error == null } == true -> report("Cancel the download before deleting this tour.")
-                                else -> deletion = selected
+            // Reset the app bar's color animation when the theme changes.
+            key(darkTheme) {
+                if (!playerFullScreen) TopAppBar(
+                    expandedHeight = 56.dp,
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        scrolledContainerColor = MaterialTheme.colorScheme.surface,
+                        navigationIconContentColor = MaterialTheme.colorScheme.primary,
+                        actionIconContentColor = MaterialTheme.colorScheme.primary,
+                    ),
+                    title = {
+                        Text(
+                            if (selected != null) "Tour details" else when (screen) {
+                                1 -> "Playing"
+                                2 -> "Together"
+                                else -> "Explore"
+                            },
+                            fontSize = 21.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                    navigationIcon = {
+                        if (selectedId != null) IconButton(onClick = {
+                            if (selectedId != null) selectedId = null else navigate(0)
+                        }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                    },
+                    actions = {
+                        if (selected == null && screen == 0) {
+                            IconButton(onClick = ::refresh, enabled = !refreshing) { Icon(Icons.Default.Refresh, "Refresh tours") }
+                            IconButton(onClick = { onThemeModeChange(if (darkTheme) AppThemeMode.LIGHT else AppThemeMode.DARK) }) {
+                                Icon(if (darkTheme) Icons.Outlined.LightMode else Icons.Outlined.DarkMode, if (darkTheme) "Switch to light theme" else "Switch to dark theme")
                             }
-                        }) { Icon(Icons.Outlined.DeleteOutline, "Delete download", tint = MaterialTheme.colorScheme.error) }
-                    } else if (selected == null && screen == 1 && playingTour != null) {
-                        IconButton(onClick = { if (group.role != "none") navigate(2) else sharingDialog = true }, enabled = !startingSession && pendingSessionTourId == null) {
-                            if (startingSession) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-                            else Icon(Icons.Outlined.Group, if (group.role != "none") "Go to session" else "Share this tour")
+                        } else if (selected != null && installed.containsKey(selected.id)) {
+                            IconButton(onClick = {
+                                when {
+                                    player.tourId == selected.id && group.role != "none" -> report("End the session and stop this tour before deleting its download.")
+                                    player.tourId == selected.id -> report("Stop this tour before deleting its download.")
+                                    downloads[selected.id]?.let { it.error == null } == true -> report("Cancel the download before deleting this tour.")
+                                    else -> deletion = selected
+                                }
+                            }) { Icon(Icons.Outlined.DeleteOutline, "Delete download", tint = MaterialTheme.colorScheme.error) }
+                        } else if (selected == null && screen == 1 && playingTour != null) {
+                            IconButton(onClick = { if (group.role != "none") navigate(2) else sharingDialog = true }, enabled = !startingSession && pendingSessionTourId == null) {
+                                if (startingSession) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                                else Icon(Icons.Outlined.Group, if (group.role != "none") "Go to session" else "Share this tour")
+                            }
                         }
-                    }
-                },
-            )
+                    },
+                )
+            }
         },
         bottomBar = {
             if (!playerFullScreen) AppNavigation(selected = when (screen) { 1, 2 -> screen; else -> 0 }, sessionActive = group.role != "none", onSelect = ::navigate)

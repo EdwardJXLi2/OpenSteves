@@ -158,7 +158,7 @@ internal fun TogetherScreen(
                         }, style = MaterialTheme.typography.titleSmall, color = colors.onSecondaryContainer)
                         Text(if (completion == "host") "Playback is paused on all connected phones." else "Your playback is paused.", style = MaterialTheme.typography.bodySmall, color = colors.onSecondaryContainer)
                     }
-                    IconButton(onClick = { completedRole = null; resultDismissed = true }) { Icon(Icons.Default.Close, "Dismiss session result", modifier = Modifier.size(20.dp)) }
+                    IconButton(onClick = { completedRole = null; resultDismissed = true }, colors = TourButtonDefaults.iconColors()) { Icon(Icons.Default.Close, "Dismiss session result", modifier = Modifier.size(20.dp)) }
                 }
             }
         }
@@ -174,7 +174,7 @@ internal fun TogetherScreen(
                     Text("Joining session", Modifier.padding(start = 16.dp), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Medium)
                 }
                 Text(state.status, Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
-                OutlinedButton(shape = MaterialTheme.shapes.small, onClick = { session.leave(); completedRole = "cancel" }, modifier = Modifier.fillMaxWidth().padding(20.dp).height(48.dp)) { Text("Cancel connection") }
+                OutlinedButton(shape = MaterialTheme.shapes.small, colors = TourButtonDefaults.outlinedColors(), onClick = { session.leave(); completedRole = "cancel" }, modifier = Modifier.fillMaxWidth().padding(20.dp).height(48.dp)) { Text("Cancel connection") }
             }
             active -> {
                 Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -202,15 +202,15 @@ internal fun TogetherScreen(
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     Text(if (host && state.peers.isEmpty()) "Friends can join from Together on their paired phones." else "Everyone can pause, seek, and change speed.", style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
                     if (host && state.peers.isEmpty()) {
-                        OutlinedButton(shape = MaterialTheme.shapes.small, onClick = ::openBluetoothSettings, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text("Bluetooth settings") }
+                        OutlinedButton(shape = MaterialTheme.shapes.small, colors = TourButtonDefaults.outlinedColors(), onClick = ::openBluetoothSettings, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text("Bluetooth settings") }
                     }
-                    OutlinedButton(shape = MaterialTheme.shapes.small, onClick = onOpenPlayer, enabled = current != null, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text("Back to tour") }
+                    OutlinedButton(shape = MaterialTheme.shapes.small, colors = TourButtonDefaults.outlinedColors(), onClick = onOpenPlayer, enabled = current != null, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text("Back to tour") }
                     if (host || state.peers.isNotEmpty()) {
-                        OutlinedButton(shape = MaterialTheme.shapes.small, onClick = playback::stop, enabled = current != null, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text("Stop playback for everyone") }
+                        OutlinedButton(shape = MaterialTheme.shapes.small, colors = TourButtonDefaults.outlinedColors(), onClick = playback::stop, enabled = current != null, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text("Stop playback for everyone") }
                     }
                     Spacer(Modifier.height(4.dp))
-                    OutlinedButton(shape = MaterialTheme.shapes.small, onClick = { confirmRole = state.role }, modifier = Modifier.fillMaxWidth().height(48.dp)) {
-                        Text(if (host) "End session" else "Leave session", color = colors.error)
+                    OutlinedButton(shape = MaterialTheme.shapes.small, colors = TourButtonDefaults.outlinedColors().copy(contentColor = colors.error), onClick = { confirmRole = state.role }, modifier = Modifier.fillMaxWidth().height(48.dp)) {
+                        Text(if (host) "End session" else "Leave session")
                     }
                 }
             }
@@ -241,7 +241,7 @@ internal fun TogetherScreen(
                     Text("Show all paired devices", Modifier.padding(start = 12.dp), style = MaterialTheme.typography.bodyMedium)
                 }
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedButton(shape = MaterialTheme.shapes.small, onClick = ::openBluetoothSettings, modifier = Modifier.fillMaxWidth().height(48.dp)) {
+                    OutlinedButton(shape = MaterialTheme.shapes.small, colors = TourButtonDefaults.outlinedColors(), onClick = ::openBluetoothSettings, modifier = Modifier.fillMaxWidth().height(48.dp)) {
                         Icon(Icons.Outlined.SettingsBluetooth, null, Modifier.size(20.dp))
                         Spacer(Modifier.width(8.dp))
                         Text("Pair another phone")
@@ -336,7 +336,7 @@ private fun SessionTour(repository: TourRepository, tour: Tour, player: Playback
                     Text(displayTitle(tour), style = MaterialTheme.typography.titleMedium)
                     Text("${tourLocation(tour)} / Downloaded", Modifier.padding(top = 4.dp), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                 }
-                Icon(Icons.Outlined.ChevronRight, "Back to tour", tint = colors.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                Icon(Icons.Outlined.ChevronRight, "Back to tour", tint = colors.primary, modifier = Modifier.size(20.dp))
             }
             if (player != null && onToggle != null) {
                 HorizontalDivider(color = colors.outlineVariant)
@@ -346,7 +346,7 @@ private fun SessionTour(repository: TourRepository, tour: Tour, player: Playback
                         Text(chapter?.title ?: if (player.playing) "Playing" else "Paused", style = MaterialTheme.typography.titleSmall)
                         Text("${time(player.positionMs)} / ${time(player.durationMs)} / ${speedLabel(player.speed)}", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                     }
-                    IconButton(onClick = onToggle, enabled = player.tourId == tour.id) { Icon(if (player.playing) Icons.Default.Pause else Icons.Default.PlayArrow, if (player.playing) "Pause for everyone" else "Play for everyone", tint = colors.primary) }
+                    IconButton(onClick = onToggle, enabled = player.tourId == tour.id, colors = TourButtonDefaults.iconColors()) { Icon(if (player.playing) Icons.Default.Pause else Icons.Default.PlayArrow, if (player.playing) "Pause for everyone" else "Play for everyone") }
                 }
             }
         }

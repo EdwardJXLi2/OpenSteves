@@ -153,7 +153,7 @@ internal fun ExploreScreen(
                 placeholder = { Text("Search cities and tours") },
                 leadingIcon = { Icon(Icons.Default.Search, null) },
                 trailingIcon = {
-                    if (query.isNotEmpty()) IconButton(onClick = { query = "" }) {
+                    if (query.isNotEmpty()) IconButton(onClick = { query = "" }, colors = TourButtonDefaults.iconColors()) {
                         Icon(Icons.Default.Close, "Clear search")
                     }
                 },
@@ -260,7 +260,7 @@ private fun CatalogRow(
                 )
             }
             when {
-                downloading -> IconButton(onClick = onCancel) { Icon(Icons.Default.Close, "Cancel download") }
+                downloading -> IconButton(onClick = onCancel, colors = TourButtonDefaults.iconColors()) { Icon(Icons.Default.Close, "Cancel download") }
                 installed == null || updating -> IconButton(onClick = onDownload) {
                     Icon(if (download?.error != null) Icons.Default.Refresh else Icons.Default.Download, "Download ${displayTitle(tour)}", tint = MaterialTheme.colorScheme.primary)
                 }

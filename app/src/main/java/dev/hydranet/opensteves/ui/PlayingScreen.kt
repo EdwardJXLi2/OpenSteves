@@ -158,7 +158,7 @@ internal fun PlayingScreen(
 
 @Composable
 private fun FullScreenButton(fullScreen: Boolean, onClick: () -> Unit) {
-    IconButton(onClick = onClick) {
+    IconButton(onClick = onClick, colors = TourButtonDefaults.iconColors()) {
         Icon(if (fullScreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
             if (fullScreen) "Exit full screen" else "Full screen")
     }
@@ -201,7 +201,7 @@ private fun PlayerControls(state: PlaybackUiState, active: Boolean, canPlay: Boo
         }
         Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(48.dp)) {
-                TextButton(onClick = { speedMenu = true }, enabled = active, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(0.dp)) {
+                TextButton(shape = MaterialTheme.shapes.small, onClick = { speedMenu = true }, enabled = active, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(0.dp)) {
                     Text(speedLabel(state.speed), style = MaterialTheme.typography.labelLarge)
                 }
                 DropdownMenu(expanded = speedMenu, onDismissRequest = { speedMenu = false }) {
@@ -215,14 +215,14 @@ private fun PlayerControls(state: PlaybackUiState, active: Boolean, canPlay: Boo
                 Icon(if (active && state.playing) Icons.Default.Pause else Icons.Default.PlayArrow, if (active && state.playing) "Pause" else "Play", Modifier.size(34.dp))
             }
             SeekButton(Icons.Default.FastForward, "Forward 20 seconds", active) { playback.seek((state.positionMs + 20_000).coerceAtMost(state.durationMs)) }
-            IconButton(onClick = playback::stop, enabled = active) { Icon(Icons.Outlined.StopCircle, "Stop playback") }
+            IconButton(onClick = playback::stop, enabled = active, colors = TourButtonDefaults.iconColors()) { Icon(Icons.Outlined.StopCircle, "Stop playback") }
         }
     }
 }
 
 @Composable
 private fun SeekButton(icon: androidx.compose.ui.graphics.vector.ImageVector, description: String, enabled: Boolean, onClick: () -> Unit) {
-    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(48.dp)) {
+    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(48.dp), colors = TourButtonDefaults.iconColors()) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(icon, description, Modifier.size(24.dp))
             Text("20 s", fontSize = 10.sp, lineHeight = 12.sp)

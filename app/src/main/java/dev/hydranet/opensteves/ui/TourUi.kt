@@ -31,6 +31,19 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 
+internal object TourButtonDefaults {
+    @Composable
+    fun iconColors(): IconButtonColors = IconButtonDefaults.iconButtonColors(
+        contentColor = MaterialTheme.colorScheme.primary,
+        disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+    )
+
+    @Composable
+    fun outlinedColors(): ButtonColors = ButtonDefaults.outlinedButtonColors(
+        contentColor = MaterialTheme.colorScheme.primary,
+    )
+}
+
 @Composable
 internal fun TourThumbnail(file: File?, modifier: Modifier = Modifier) {
     val bitmap = rememberBitmap(file, 512).image
@@ -80,9 +93,9 @@ internal fun ZoomableMap(file: File?, title: String) {
         }
         Surface(Modifier.align(Alignment.BottomEnd).padding(4.dp), shape = RoundedCornerShape(6.dp), tonalElevation = 4.dp) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { scale = (scale / 1.5f).coerceAtLeast(1f); offset = Offset.Zero }) { Icon(Icons.Default.Remove, "Zoom out") }
+                IconButton(onClick = { scale = (scale / 1.5f).coerceAtLeast(1f); offset = Offset.Zero }, colors = TourButtonDefaults.iconColors()) { Icon(Icons.Default.Remove, "Zoom out") }
                 TextButton(shape = MaterialTheme.shapes.small, onClick = { scale = 1f; offset = Offset.Zero }) { Text("Fit") }
-                IconButton(onClick = { scale = (scale * 1.5f).coerceAtMost(8f) }) { Icon(Icons.Default.Add, "Zoom in") }
+                IconButton(onClick = { scale = (scale * 1.5f).coerceAtMost(8f) }, colors = TourButtonDefaults.iconColors()) { Icon(Icons.Default.Add, "Zoom in") }
             }
         }
     }
