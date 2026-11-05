@@ -224,6 +224,20 @@ class SessionManager private constructor(private val context: Context) {
         context.stopService(Intent(context, SessionService::class.java))
     }
 
+    fun removeGuest(address: String) {
+        if (state.value.role != "host") return
+        val peer = peers.remove(address) ?: return
+        val notice = frame("removed").toString().toByteArray(Charsets.UTF_8)
+        if (peer.outgoing.trySend(notice).isSuccess) {
+            peer.outgoing.close()
+            scope.launch {
+                try { delay(1_000) }
+                finally { peer.close() }
+            }
+        } else peer.close()
+        refreshPeers()
+    }
+
     internal fun fail(message: String) {
         leave()
         mutableState.value = SessionState(error = message)
@@ -306,7 +320,7 @@ class SessionManager private constructor(private val context: Context) {
                     input.readFully(bytes)
                     val message = JSONObject(bytes.toString(Charsets.UTF_8))
                     withContext(Dispatchers.Main.immediate) {
-                        if (generation == currentGeneration) receive(peer, message)
+                        if (generation == currentGeneration && peers[address] === peer) receive(peer, message)
                     }
                 }
             } catch (error: Exception) {
@@ -350,6 +364,7 @@ class SessionManager private constructor(private val context: Context) {
             }
         } else {
             when (type) {
+                "removed" -> fail("The host removed you from the session. Your playback is paused.")
                 "hello" -> {
                     require(hostGreeting == null)
                     val audio = decode(message.getJSONObject("audio"))
@@ -477,12 +492,12 @@ class SessionManager private constructor(private val context: Context) {
     }
 
     private fun refreshPeers() {
-        val names = peers.values.filter { it.ready }.map { it.name }
+        val connected = peers.values.filter { it.ready }.map { SessionPeer(it.address, it.name) }
         mutableState.value = state.value.copy(
-            peers = names,
+            peers = connected,
             status = if (state.value.role == "host") {
-                if (names.isEmpty()) "Waiting for friends to join" else "Hosting ${names.size} ${if (names.size == 1) "friend" else "friends"}"
-            } else if (names.isEmpty()) "Synchronizing with host…" else "Connected to ${names.first()}",
+                if (connected.isEmpty()) "Waiting for friends to join" else "Hosting ${connected.size} ${if (connected.size == 1) "friend" else "friends"}"
+            } else if (connected.isEmpty()) "Synchronizing with host…" else "Connected to ${connected.first().name}",
         )
     }
 

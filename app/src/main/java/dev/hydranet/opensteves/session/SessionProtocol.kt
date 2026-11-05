@@ -3,10 +3,12 @@ package dev.hydranet.opensteves.session
 data class SessionState(
     val role: String = "none",
     val status: String = "Listen together over Bluetooth",
-    val peers: List<String> = emptyList(),
+    val peers: List<SessionPeer> = emptyList(),
     val error: String? = null,
     val requiredTourId: Int? = null,
 )
+
+data class SessionPeer(val address: String, val name: String)
 
 data class PlaybackCommand(val action: String, val positionMs: Long = 0, val speed: Float = 1f)
 

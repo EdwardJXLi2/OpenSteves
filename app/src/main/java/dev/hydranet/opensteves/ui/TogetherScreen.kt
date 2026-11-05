@@ -36,6 +36,7 @@ import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Headphones
 import androidx.compose.material.icons.outlined.PhoneAndroid
+import androidx.compose.material.icons.outlined.PersonRemove
 import androidx.compose.material.icons.outlined.SettingsBluetooth
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -72,6 +73,7 @@ import dev.hydranet.opensteves.data.TourRepository
 import dev.hydranet.opensteves.playback.PlaybackConnection
 import dev.hydranet.opensteves.playback.PlaybackUiState
 import dev.hydranet.opensteves.session.SessionManager
+import dev.hydranet.opensteves.session.SessionPeer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -95,6 +97,7 @@ internal fun TogetherScreen(
     var pairedLoaded by remember { mutableStateOf(false) }
     var pendingPermission by remember { mutableStateOf<(() -> Unit)?>(null) }
     var confirmRole by remember { mutableStateOf<String?>(null) }
+    var guestToRemove by remember { mutableStateOf<SessionPeer?>(null) }
     var completedRole by rememberSaveable { mutableStateOf<String?>(null) }
     var resultDismissed by rememberSaveable { mutableStateOf(false) }
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -122,6 +125,7 @@ internal fun TogetherScreen(
             .onFailure { report("Bluetooth settings are unavailable on this device.") }
     }
     LaunchedEffect(state.role) {
+        if (state.role != "host") guestToRemove = null
         if (state.role != "none") {
             completedRole = null
             resultDismissed = false
@@ -188,9 +192,9 @@ internal fun TogetherScreen(
                 } else "Your connection")
                 if (host) {
                     SessionPhone("This phone", "Hosting the session", host = true)
-                    state.peers.forEach { name -> SessionPhone(name, "Joined the session") }
+                    state.peers.forEach { guest -> SessionPhone(guest.name, "Joined the session", onRemove = { guestToRemove = guest }) }
                 } else {
-                    state.peers.forEach { name -> SessionPhone(name, "Hosting the session", host = true) }
+                    state.peers.forEach { peer -> SessionPhone(peer.name, "Hosting the session", host = true) }
                     SessionPhone("This phone", "Joined the session")
                 }
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -275,6 +279,20 @@ internal fun TogetherScreen(
             }
         }
     }
+    guestToRemove?.let { guest ->
+        AlertDialog(
+            onDismissRequest = { guestToRemove = null },
+            title = { Text("Remove ${guest.name}?") },
+            text = { Text("Their playback will pause and they will leave the session. Everyone else will keep listening.") },
+            confirmButton = {
+                TextButton(shape = MaterialTheme.shapes.small, onClick = {
+                    session.removeGuest(guest.address)
+                    guestToRemove = null
+                }) { Text("Remove", color = colors.error) }
+            },
+            dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { guestToRemove = null }) { Text("Cancel") } },
+        )
+    }
     confirmRole?.let { role ->
         val ending = role == "host"
         AlertDialog(
@@ -339,7 +357,7 @@ private fun SessionSection(title: String) {
 }
 
 @Composable
-private fun SessionPhone(name: String, status: String, host: Boolean = false, onJoin: (() -> Unit)? = null) {
+private fun SessionPhone(name: String, status: String, host: Boolean = false, onJoin: (() -> Unit)? = null, onRemove: (() -> Unit)? = null) {
     val colors = MaterialTheme.colorScheme
     Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 12.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(Icons.Outlined.PhoneAndroid, null, tint = colors.onSurfaceVariant)
@@ -349,6 +367,7 @@ private fun SessionPhone(name: String, status: String, host: Boolean = false, on
         }
         when {
             onJoin != null -> TextButton(shape = MaterialTheme.shapes.small, onClick = onJoin) { Text("Join") }
+            onRemove != null -> IconButton(onClick = onRemove) { Icon(Icons.Outlined.PersonRemove, "Remove $name", tint = colors.error) }
             host -> Text("HOST", style = MaterialTheme.typography.labelSmall, color = colors.primary)
             else -> Icon(Icons.Outlined.CheckCircle, null, tint = colors.primary, modifier = Modifier.size(20.dp))
         }
