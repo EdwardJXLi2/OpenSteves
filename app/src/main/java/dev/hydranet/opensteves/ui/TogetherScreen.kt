@@ -184,7 +184,6 @@ internal fun TogetherScreen(
                         Text(if (starting) "Starting session" else if (host) "You’re hosting" else "Listening together", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Medium)
                         if (!host || starting) Text(state.status, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                     }
-                    if (host) Text("${state.peers.size + 1} of 6", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                 }
                 current?.let { tour ->
                     SessionTour(repository, tour, player, onOpenPlayer, playback::toggle)

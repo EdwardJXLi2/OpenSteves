@@ -26,7 +26,7 @@ Previously saved subtitles remain available offline.
 ## Listen together
 
 Each phone plays its own downloaded audio while Bluetooth carries playback commands and timing updates.
-The session requires no Wi-Fi or mobile data. It supports one host and up to five guests.
+The session requires no Wi-Fi or mobile data. Each session has one host.
 
 1. Download the same tour revision on every phone before leaving internet coverage.
 2. Pair each guest phone with the host through Android Bluetooth settings.

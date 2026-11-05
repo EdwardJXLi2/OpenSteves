@@ -161,7 +161,7 @@ class SessionManager private constructor(private val context: Context) {
                             var accepted = false
                             try {
                                 withContext(Dispatchers.Main.immediate) {
-                                    if (generation == currentGeneration && peers.size < MAX_GUESTS &&
+                                    if (generation == currentGeneration &&
                                         socket.remoteDevice.bondState == BluetoothDevice.BOND_BONDED &&
                                         !peers.containsKey(socket.remoteDevice.address)
                                     ) {
@@ -544,7 +544,6 @@ class SessionManager private constructor(private val context: Context) {
     companion object {
         private const val PROTOCOL_VERSION = 1
         private const val MAX_FRAME_SIZE = 8_192
-        private const val MAX_GUESTS = 5
         private val SERVICE_UUID: UUID = UUID.fromString("f0a79b2c-8103-49e5-9d93-75007ea59814")
         @Volatile private var instance: SessionManager? = null
         fun get(context: Context): SessionManager = instance ?: synchronized(this) {
