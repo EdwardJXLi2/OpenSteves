@@ -11,20 +11,17 @@ Requires Android 8.0 (API 26) or later.
 
 The catalog and tour bundles come from the public Rick Steves Audio Europe servers.
 Internet access is required to load the catalog and download tours.
-Downloaded tours remain available offline. The Downloads screen shows installed sizes and provides deletion controls.
+Downloaded tours remain available offline.
+Downloaded tours appear at the top of **Explore**.
+Open a downloaded tour, then select **Delete download** in the toolbar to remove it.
 Stop a loaded tour before deleting or updating its download.
+
+The app follows the system theme until you select the sun or moon icon in **Explore**.
+The app saves the selected appearance on the device.
 
 Walking tours include maps and untimed transcripts.
 Bundled VTT files generally contain chapter and image cues, not spoken captions.
-Import an SRT or caption WebVTT file to display timed subtitles during playback.
-
-The subtitle dialog also supports a configurable HTTPS transcription endpoint.
-Generation uploads the tour audio only when you select **Upload and generate**. Provider charges can apply.
-The API key stays in memory and is not saved.
-The endpoint must accept multipart fields `file`, `model`, `response_format=verbose_json`, and `timestamp_granularities[]=segment`.
-It must return JSON with `segments` containing `start`, `end`, and `text`; timestamps use seconds.
-The complete MP3 is uploaded, so the provider must accept its file size. Automatic audio splitting is not implemented.
-Imported and generated subtitles remain available offline.
+Previously saved subtitles remain available offline.
 
 ## Listen together
 
@@ -33,8 +30,8 @@ The session requires no Wi-Fi or mobile data. It supports one host and up to fiv
 
 1. Download the same tour revision on every phone before leaving internet coverage.
 2. Pair each guest phone with the host through Android Bluetooth settings.
-3. Open the downloaded tour on the host and select **Host a session** in **Together**.
-4. On each guest, open **Together** and select the paired host.
+3. Play the downloaded tour on the host, then select **Start a session** in **Together**.
+4. On each guest, open **Together**, select **Show paired phones**, then select the host.
 
 Everyone can play, pause, seek, stop, and change speed between 0.5× and 2×.
 The host orders commands and schedules playback changes 600 ms ahead.
