@@ -55,8 +55,16 @@ class SessionManager private constructor(private val context: Context) {
     private var clockSampleAt = 0L
     private var hostGreeting: PlaybackSnapshot? = null
     private val pendingPings = mutableSetOf<Long>()
+    private val mutableDebugEvents = MutableStateFlow<List<SessionDebugEvent>>(emptyList())
+    internal val debugEvents: StateFlow<List<SessionDebugEvent>> = mutableDebugEvents.asStateFlow()
+    private var debugStartedAt = 0L
+    private var debugEventId = 0L
+    private var debugPeerId = 0
+    private var sentFrames = 0L
+    private var receivedFrames = 0L
+    private var lastDriftMs: Long? = null
 
-    private class Peer(val socket: BluetoothSocket, val address: String, val name: String) {
+    private class Peer(val socket: BluetoothSocket, val address: String, val name: String, val debugId: Int) {
         val outgoing = Channel<ByteArray>(16)
         var ready = false
         var lastReceived = SystemClock.elapsedRealtime()
@@ -64,6 +72,32 @@ class SessionManager private constructor(private val context: Context) {
             outgoing.close()
             runCatching { socket.close() }
         }
+    }
+
+    internal fun diagnostics(): SessionDiagnostics {
+        val timestamp = now()
+        return SessionDiagnostics(
+            elapsedMs = if (debugStartedAt == 0L) 0 else timestamp - debugStartedAt,
+            listening = server != null,
+            connecting = connectingSocket != null,
+            peers = peers.values.map { SessionDebugPeer(it.debugId, it.ready, timestamp - it.lastReceived) },
+            sentFrames = sentFrames,
+            receivedFrames = receivedFrames,
+            rttMs = bestRtt.takeUnless { it == Long.MAX_VALUE },
+            clockOffsetMs = clockOffset.takeIf { bestRtt != Long.MAX_VALUE },
+            clockSampleAgeMs = (timestamp - clockSampleAt).takeIf { bestRtt != Long.MAX_VALUE },
+            driftMs = lastDriftMs,
+            pendingCommands = hostSchedule.size + guestSchedule.size,
+            sequence = if (state.value.role == "guest") receivedSequence else sequence,
+            playback = playback?.snapshot(),
+            playbackReady = playback?.isReady() == true,
+        )
+    }
+
+    private fun debug(category: String, detail: String) {
+        if (debugStartedAt == 0L) debugStartedAt = now()
+        val event = SessionDebugEvent(++debugEventId, now() - debugStartedAt, category, detail.take(1_024))
+        mutableDebugEvents.value = (mutableDebugEvents.value + event).takeLast(200)
     }
 
     fun attachPlayback(playback: SessionPlayback?) {
@@ -132,10 +166,17 @@ class SessionManager private constructor(private val context: Context) {
     }
 
     private fun start(action: String, address: String? = null) {
+        debugStartedAt = now()
+        debugPeerId = 0
+        sentFrames = 0
+        receivedFrames = 0
+        mutableDebugEvents.value = emptyList()
         mutableState.value = SessionState(if (action == SessionService.ACTION_HOST) "host" else "guest", "Starting Bluetooth session…")
+        debug("SESSION", "Starting ${state.value.role}; protocol $PROTOCOL_VERSION; RFCOMM $SERVICE_UUID")
         try {
             context.startForegroundService(Intent(context, SessionService::class.java).setAction(action).putExtra("address", address))
-        } catch (_: RuntimeException) {
+        } catch (error: RuntimeException) {
+            debug("ERROR", "Starting session service failed: ${error.javaClass.simpleName}")
             fail("Could not start Bluetooth. Keep the app open and check Nearby devices permission.")
         }
     }
@@ -154,6 +195,7 @@ class SessionManager private constructor(private val context: Context) {
                 val listener = adapter()?.listenUsingRfcommWithServiceRecord("OpenSteves", SERVICE_UUID)
                     ?: throw IOException("Bluetooth unavailable")
                 server = listener
+                debug("SESSION", "Listening for paired guests")
                 scope.launch(Dispatchers.IO) {
                     try {
                         while (isActive) {
@@ -170,6 +212,8 @@ class SessionManager private constructor(private val context: Context) {
                                         val greeting = playback?.snapshot() ?: snapshot
                                         send(peer, frame("hello").put("audio", encode(greeting)))
                                         refreshPeers()
+                                    } else if (generation == currentGeneration) {
+                                        debug("CONNECTION", "Rejected connection: unpaired or duplicate")
                                     }
                                 }
                             } finally {
@@ -179,13 +223,17 @@ class SessionManager private constructor(private val context: Context) {
                     } catch (error: Exception) {
                         if (error is CancellationException) throw error
                         withContext(Dispatchers.Main.immediate) {
-                            if (generation == currentGeneration) fail("Bluetooth stopped. Start a new session to reconnect.")
+                            if (generation == currentGeneration) {
+                                debug("ERROR", "Bluetooth accept failed: ${error.javaClass.simpleName}")
+                                fail("Bluetooth stopped. Start a new session to reconnect.")
+                            }
                         }
                     }
                 }
                 startHeartbeat()
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
+                debug("ERROR", "Opening Bluetooth listener failed: ${error.javaClass.simpleName}")
                 fail("Could not host a session. Check Bluetooth and Nearby devices permission.")
             }
         }
@@ -200,6 +248,7 @@ class SessionManager private constructor(private val context: Context) {
                 val device = adapter()?.getRemoteDevice(address) ?: throw IOException("Bluetooth unavailable")
                 val socket = device.createRfcommSocketToServiceRecord(SERVICE_UUID)
                 connectingSocket = socket
+                debug("CONNECTION", "Connecting to paired host")
                 val timeout = scope.launch {
                     delay(20_000)
                     if (generation == currentGeneration && connectingSocket != null) fail("The host did not respond. Check that its session is open.")
@@ -212,12 +261,16 @@ class SessionManager private constructor(private val context: Context) {
                 startHeartbeat()
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
-                if (generation == currentGeneration) fail("Could not connect. Keep the host nearby with its session open.")
+                if (generation == currentGeneration) {
+                    debug("ERROR", "Connecting to host failed: ${error.javaClass.simpleName}")
+                    fail("Could not connect. Keep the host nearby with its session open.")
+                }
             }
         }
     }
 
     fun leave() {
+        if (state.value.role != "none") debug("SESSION", "Leaving ${state.value.role} session; pausing playback")
         if (state.value.role != "none") playback?.pause()
         resetConnections()
         mutableState.value = SessionState(status = "Session ended")
@@ -227,6 +280,7 @@ class SessionManager private constructor(private val context: Context) {
     fun removeGuest(address: String) {
         if (state.value.role != "host") return
         val peer = peers.remove(address) ?: return
+        debug("CONNECTION", "Removing peer ${peer.debugId}")
         val notice = frame("removed").toString().toByteArray(Charsets.UTF_8)
         if (peer.outgoing.trySend(notice).isSuccess) {
             peer.outgoing.close()
@@ -239,11 +293,13 @@ class SessionManager private constructor(private val context: Context) {
     }
 
     internal fun fail(message: String) {
+        debug("ERROR", message)
         leave()
         mutableState.value = SessionState(error = message)
     }
 
     private fun requireTour(tourId: Int) {
+        debug("ERROR", "Tour $tourId is missing or its audio hash differs from the host")
         leave()
         mutableState.value = SessionState(requiredTourId = tourId)
     }
@@ -254,6 +310,7 @@ class SessionManager private constructor(private val context: Context) {
 
     internal fun serviceDestroyed() {
         if (state.value.role != "none") {
+            debug("SESSION", "Session service stopped; pausing playback")
             playback?.pause()
             resetConnections()
             mutableState.value = SessionState(status = "Session ended")
@@ -262,20 +319,27 @@ class SessionManager private constructor(private val context: Context) {
 
     fun request(command: PlaybackCommand): Boolean {
         if (state.value.role == "none") return false
-        if (!SessionTiming.valid(command)) return true
+        if (!SessionTiming.valid(command)) {
+            debug("COMMAND", "Rejected invalid local command: ${command.action}")
+            return true
+        }
+        debug("COMMAND", "Local ${command.action}: position=${command.positionMs} ms, speed=${command.speed}")
         if (state.value.role == "host") {
             scheduleCommand(command)
         } else {
             val peer = peers.values.firstOrNull()
             if (peer?.ready == true) {
                 send(peer, frame("command").put("action", command.action).put("position", command.positionMs).put("speed", command.speed))
-            }
+            } else debug("COMMAND", "Ignored command while host connection is not ready")
         }
         return true
     }
 
     private fun scheduleCommand(command: PlaybackCommand) {
-        if (hostSchedule.size >= 64) return
+        if (hostSchedule.size >= 64) {
+            debug("COMMAND", "Ignored command: schedule is full")
+            return
+        }
         val now = now()
         val at = now + SessionTiming.LEAD_MS
         // Earlier commands must execute at their original deadlines for this projection to remain valid.
@@ -285,17 +349,20 @@ class SessionManager private constructor(private val context: Context) {
         val target = SessionTiming.scheduled(previous.first, previous.second, command, at)
         val seq = broadcastState(target, at, force = true)
         hostSchedule[seq] = target to at
+        debug("SCHEDULE", "${command.action}: sequence=$seq, lead=${at - now()} ms")
         scope.launch {
             delay((at - now()).coerceAtLeast(0))
             playback?.apply(target.copy(positionMs = SessionTiming.position(target, at, now())))
+            debug("APPLY", "Host sequence=$seq, lateness=${now() - at} ms")
             hostSchedule.remove(seq)
         }
     }
 
     private fun register(socket: BluetoothSocket): Peer {
         val address = socket.remoteDevice.address
-        val peer = Peer(socket, address, socket.remoteDevice.name ?: "Friend")
+        val peer = Peer(socket, address, socket.remoteDevice.name ?: "Friend", ++debugPeerId)
         peers[address] = peer
+        debug("CONNECTION", "Peer ${peer.debugId} connected; checking tour and clock")
         val currentGeneration = generation
         scope.launch(Dispatchers.IO) {
             try {
@@ -304,10 +371,18 @@ class SessionManager private constructor(private val context: Context) {
                     output.writeInt(bytes.size)
                     output.write(bytes)
                     output.flush()
+                    withContext(Dispatchers.Main.immediate) {
+                        if (generation == currentGeneration) {
+                            sentFrames++
+                            debug("TX", "Peer ${peer.debugId}: ${bytes.toString(Charsets.UTF_8)}")
+                        }
+                    }
                 }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
-                withContext(Dispatchers.Main.immediate) { disconnected(address, peer, currentGeneration) }
+                withContext(Dispatchers.Main.immediate) {
+                    disconnected(address, peer, currentGeneration, "Write failed: ${error.javaClass.simpleName}")
+                }
             }
         }
         scope.launch(Dispatchers.IO) {
@@ -320,19 +395,26 @@ class SessionManager private constructor(private val context: Context) {
                     input.readFully(bytes)
                     val message = JSONObject(bytes.toString(Charsets.UTF_8))
                     withContext(Dispatchers.Main.immediate) {
-                        if (generation == currentGeneration && peers[address] === peer) receive(peer, message)
+                        if (generation == currentGeneration && peers[address] === peer) {
+                            receivedFrames++
+                            debug("RX", "Peer ${peer.debugId}: $message")
+                            receive(peer, message)
+                        }
                     }
                 }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
-                withContext(Dispatchers.Main.immediate) { disconnected(address, peer, currentGeneration) }
+                withContext(Dispatchers.Main.immediate) {
+                    disconnected(address, peer, currentGeneration, "Read or protocol failure: ${error.javaClass.simpleName}")
+                }
             }
         }
         return peer
     }
 
-    private fun disconnected(address: String, peer: Peer, currentGeneration: Long) {
+    private fun disconnected(address: String, peer: Peer, currentGeneration: Long, reason: String) {
         if (generation != currentGeneration || peers[address] !== peer) return
+        debug("CONNECTION", "Peer ${peer.debugId} disconnected: $reason")
         peers.remove(address)
         peer.close()
         if (state.value.role == "guest") {
@@ -349,6 +431,7 @@ class SessionManager private constructor(private val context: Context) {
                 "ping" -> send(peer, frame("pong").put("sent", message.getLong("sent")).put("host", now()))
                 "ready" -> {
                     peer.ready = true
+                    debug("CONNECTION", "Peer ${peer.debugId} ready")
                     val at = now() + SessionTiming.LEAD_MS
                     val target = hostSchedule.values.lastOrNull()?.let { it.first.copy(positionMs = SessionTiming.position(it.first, it.second, at)) }
                         ?: playback?.snapshot()?.let { it.copy(positionMs = SessionTiming.position(it, now(), at)) }
@@ -385,6 +468,7 @@ class SessionManager private constructor(private val context: Context) {
                                 playback?.snapshot()?.tourId == audio.tourId
                             ) {
                                 peer.ready = true
+                                debug("CONNECTION", "Host connection ready; audio verified and clock synchronized")
                                 send(peer, frame("ready"))
                                 refreshPeers()
                                 return@launch
@@ -405,6 +489,7 @@ class SessionManager private constructor(private val context: Context) {
                         bestRtt = rtt
                         clockSampleAt = received
                         clockOffset = SessionTiming.clockOffset(sent, received, hostAt)
+                        debug("CLOCK", "RTT=$rtt ms, host clock offset=$clockOffset ms")
                     }
                 }
                 "state" -> if (peer.ready) receiveState(message)
@@ -415,7 +500,10 @@ class SessionManager private constructor(private val context: Context) {
 
     private fun receiveState(message: JSONObject) {
         val seq = message.getLong("sequence")
-        if (seq <= receivedSequence) return
+        if (seq <= receivedSequence) {
+            debug("SYNC", "Ignored stale sequence=$seq; last=$receivedSequence")
+            return
+        }
         val target = decode(message.getJSONObject("audio"))
         if (playback?.hasAudio(target.tourId, target.hash) != true) {
             requireTour(target.tourId)
@@ -428,7 +516,10 @@ class SessionManager private constructor(private val context: Context) {
         receivedSequence = seq
         val force = message.optBoolean("force")
         correction?.cancel()
-        if (!force && guestSchedule.isNotEmpty()) return
+        if (!force && guestSchedule.isNotEmpty()) {
+            debug("SYNC", "Skipped periodic state while commands are pending")
+            return
+        }
         if (force) {
             require(guestSchedule.size < 64)
             guestSchedule.add(seq)
@@ -440,9 +531,13 @@ class SessionManager private constructor(private val context: Context) {
             delay((at - now()).coerceAtLeast(0))
             val position = SessionTiming.position(target, at, now())
             val current = playback?.snapshot()
+            lastDriftMs = current?.takeIf { it.tourId == target.tourId }?.let { it.positionMs - position }
             if (force || current == null || current.tourId != target.tourId || current.playing != target.playing ||
                 current.speed != target.speed || abs(current.positionMs - position) > 90
-            ) playback?.apply(target.copy(positionMs = position))
+            ) {
+                playback?.apply(target.copy(positionMs = position))
+                debug("APPLY", "Guest sequence=$seq, forced=$force, drift=$lastDriftMs ms, lateness=${now() - at} ms")
+            }
             guestSchedule.remove(seq)
         }
         if (force) guestApplyTail = apply else correction = apply
@@ -453,7 +548,7 @@ class SessionManager private constructor(private val context: Context) {
             while (isActive) {
                 delay(2_000)
                 peers.toMap().forEach { (address, peer) ->
-                    if (now() - peer.lastReceived > 12_000) disconnected(address, peer, generation)
+                    if (now() - peer.lastReceived > 12_000) disconnected(address, peer, generation, "No frames received for 12 s")
                 }
                 if (state.value.role == "host" && hostSchedule.isEmpty()) {
                     playback?.snapshot()?.let { snapshot ->
@@ -487,7 +582,7 @@ class SessionManager private constructor(private val context: Context) {
     private fun send(peer: Peer, message: JSONObject) {
         val bytes = message.toString().toByteArray(Charsets.UTF_8)
         if (bytes.size > MAX_FRAME_SIZE || !peer.outgoing.trySend(bytes).isSuccess) {
-            disconnected(peer.address, peer, generation)
+            disconnected(peer.address, peer, generation, "Outgoing frame too large or send queue unavailable")
         }
     }
 
@@ -522,6 +617,7 @@ class SessionManager private constructor(private val context: Context) {
         clockOffset = 0
         hostGreeting = null
         pendingPings.clear()
+        lastDriftMs = null
     }
 
     private fun adapter(): BluetoothAdapter? = context.getSystemService(BluetoothManager::class.java)?.adapter

@@ -34,6 +34,8 @@ import dev.hydranet.opensteves.session.SessionManager
 import dev.hydranet.opensteves.ui.theme.AppThemeMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -54,6 +56,9 @@ fun TourApp(
     val player by playback.state.collectAsState()
     val session = remember { SessionManager.get(context) }
     val group by session.state.collectAsState()
+    val hasSessionDebugEvents by remember(session) {
+        session.debugEvents.map { it.isNotEmpty() }.distinctUntilChanged()
+    }.collectAsState(false)
     var screen by rememberSaveable { mutableIntStateOf(0) }
     var selectedId by rememberSaveable { mutableStateOf<Int?>(null) }
     var playerTourId by rememberSaveable { mutableStateOf<Int?>(null) }
@@ -159,6 +164,7 @@ fun TourApp(
     val current = player.tourId?.let { id -> installed[id]?.tour ?: tours.find { it.id == id } }
     val playingTour = current ?: playerTourId?.let { installed[it]?.tour }
     var playerFullScreen by rememberSaveable(playingTour?.id, screen, selectedId) { mutableStateOf(false) }
+    var showingSessionDebug by rememberSaveable(screen, selectedId) { mutableStateOf(false) }
     val darkTheme = when (themeMode) {
         AppThemeMode.SYSTEM -> isSystemInDarkTheme()
         AppThemeMode.LIGHT -> false
@@ -214,6 +220,10 @@ fun TourApp(
                                 if (startingSession) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
                                 else Icon(Icons.Outlined.Group, if (group.role != "none") "Go to session" else "Share this tour")
                             }
+                        } else if (selected == null && screen == 2 && !showingSessionDebug && (group.role != "none" || hasSessionDebugEvents)) {
+                            IconButton(onClick = { showingSessionDebug = true }) {
+                                Icon(Icons.Outlined.BugReport, "Session debug")
+                            }
                         }
                     },
                 )
@@ -236,7 +246,9 @@ fun TourApp(
                 } else Column(Modifier.fillMaxSize().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                     EmptyState(Icons.Outlined.Headphones, "Nothing playing", "Start a tour from Explore to listen here.")
                 }
-                2 -> TogetherScreen(session, repository, playback, current, startingSession,
+                2 -> if (showingSessionDebug) {
+                    SessionDebugScreen(session, onBack = { showingSessionDebug = false }, report = report)
+                } else TogetherScreen(session, repository, playback, current, startingSession,
                     onStartSession = { current?.let(::requestSession) }, onOpenPlayer = { navigate(1) }, report = report)
                 else -> savedScreens.SaveableStateProvider("explore") {
                     ExploreScreen(tours, installed, downloads, refreshing, repository, player.tourId,
