@@ -47,7 +47,9 @@ class SessionService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        val open = PendingIntent.getActivity(this, 0,
+            Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_OPEN_PLAYING, true),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val stop = PendingIntent.getService(
             this, 1, Intent(this, SessionService::class.java).setAction(ACTION_LEAVE), PendingIntent.FLAG_IMMUTABLE,
         )

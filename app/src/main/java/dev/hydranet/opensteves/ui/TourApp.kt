@@ -40,6 +40,7 @@ fun TourApp(
     playback: PlaybackConnection,
     themeMode: AppThemeMode,
     onThemeModeChange: (AppThemeMode) -> Unit,
+    openPlaying: Int = 0,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -100,6 +101,7 @@ fun TourApp(
     }
 
     LaunchedEffect(Unit) { refresh() }
+    LaunchedEffect(openPlaying) { if (openPlaying > 0) navigate(1) }
     LaunchedEffect(player.tourId) { player.tourId?.let { playerTourId = it } }
     LaunchedEffect(message) { message?.let(report) }
     LaunchedEffect(player.error) { player.error?.let(report) }

@@ -66,7 +66,8 @@ class PlaybackService : MediaSessionService(), SessionPlayback {
             }
         })
         session = MediaSession.Builder(this, SharedPlayer(player))
-            .setSessionActivity(PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
+            .setSessionActivity(PendingIntent.getActivity(this, 0,
+                Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_OPEN_PLAYING, true),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
             .setCallback(object : MediaSession.Callback {
                 override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
