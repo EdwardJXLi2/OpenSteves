@@ -84,6 +84,8 @@ internal fun TogetherScreen(
     repository: TourRepository,
     playback: PlaybackConnection,
     current: Tour?,
+    startingSession: Boolean,
+    onStartSession: () -> Unit,
     onOpenPlayer: () -> Unit,
     report: (String) -> Unit,
 ) {
@@ -202,7 +204,7 @@ internal fun TogetherScreen(
                     if (host && state.peers.isEmpty()) {
                         OutlinedButton(shape = MaterialTheme.shapes.small, onClick = ::openBluetoothSettings, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text("Bluetooth settings") }
                     }
-                    OutlinedButton(shape = MaterialTheme.shapes.small, onClick = onOpenPlayer, enabled = current != null, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text("Open player") }
+                    OutlinedButton(shape = MaterialTheme.shapes.small, onClick = onOpenPlayer, enabled = current != null, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text("Back to tour") }
                     if (host || state.peers.isNotEmpty()) {
                         OutlinedButton(shape = MaterialTheme.shapes.small, onClick = playback::stop, enabled = current != null, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text("Stop playback for everyone") }
                     }
@@ -256,7 +258,7 @@ internal fun TogetherScreen(
                         Text("Host a session", Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp), style = MaterialTheme.typography.titleMedium)
                         if (current != null && installed.containsKey(current.id)) {
                             SessionTour(repository, current, null, onOpenPlayer, null, framed = false)
-                            Button(shape = MaterialTheme.shapes.small, onClick = { withBluetooth { session.host() } }, enabled = player.durationMs > 0, modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 16.dp).height(48.dp)) { Text(if (player.durationMs > 0) "Start a session" else "Loading tour…") }
+                            Button(shape = MaterialTheme.shapes.small, onClick = onStartSession, enabled = !startingSession, modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 16.dp).height(48.dp)) { Text(if (startingSession) "Starting session…" else "Start a session") }
                         } else {
                             Text("Start a tour from Explore first.", Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
                         }
@@ -334,7 +336,7 @@ private fun SessionTour(repository: TourRepository, tour: Tour, player: Playback
                     Text(displayTitle(tour), style = MaterialTheme.typography.titleMedium)
                     Text("${tourLocation(tour)} / Downloaded", Modifier.padding(top = 4.dp), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                 }
-                Icon(Icons.Outlined.ChevronRight, "Open player", tint = colors.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                Icon(Icons.Outlined.ChevronRight, "Back to tour", tint = colors.onSurfaceVariant, modifier = Modifier.size(20.dp))
             }
             if (player != null && onToggle != null) {
                 HorizontalDivider(color = colors.outlineVariant)

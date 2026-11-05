@@ -14,7 +14,7 @@ Internet access is required to load the catalog and download tours.
 Downloaded tours remain available offline.
 Downloaded tours appear at the top of **Explore**.
 Open a downloaded tour, then select **Delete download** in the toolbar to remove it.
-Stop a loaded tour before deleting or updating its download.
+Stop the current tour before deleting or updating its download.
 
 The app follows the system theme until you select the sun or moon icon in **Explore**.
 The app saves the selected appearance on the device.
@@ -30,7 +30,7 @@ The session requires no Wi-Fi or mobile data. It supports one host and up to fiv
 
 1. Download the same tour revision on every phone before leaving internet coverage.
 2. Pair each guest phone with the host through Android Bluetooth settings.
-3. Play the downloaded tour on the host, then select **Start a session** in **Together**.
+3. Start the downloaded tour on the host, then select **Start a session** in **Together**.
 4. On each guest, open **Together**, select **Show paired phones**, then select the host.
 
 Everyone can play, pause, seek, stop, and change speed between 0.5× and 2×.

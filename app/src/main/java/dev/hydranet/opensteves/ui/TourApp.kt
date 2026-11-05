@@ -59,6 +59,8 @@ fun TourApp(
     var playerTourId by rememberSaveable { mutableStateOf<Int?>(null) }
     var deletion by remember { mutableStateOf<Tour?>(null) }
     var sharingDialog by remember { mutableStateOf(false) }
+    var startingSession by remember { mutableStateOf(false) }
+    var pendingSessionTourId by rememberSaveable { mutableStateOf<Int?>(null) }
     var refreshing by remember { mutableStateOf(false) }
     var preparingSessionDownload by remember { mutableStateOf(false) }
     var sessionDownloadError by remember(group.requiredTourId) { mutableStateOf<String?>(null) }
@@ -66,9 +68,6 @@ fun TourApp(
     val snackbar = remember { SnackbarHostState() }
     val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val report: (String) -> Unit = { text -> scope.launch { snackbar.showSnackbar(text) } }
-    val bluetooth = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) session.host() else report("Allow Nearby devices permission to start a session.")
-    }
     fun notificationPermission() {
         if (Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -103,6 +102,50 @@ fun TourApp(
         playback.play(tour, positionMs)
         playerTourId = tour.id
         navigate(1)
+    }
+
+    fun startSession(tour: Tour) {
+        if (startingSession || session.state.value.role != "none") return
+        startingSession = true
+        scope.launch {
+            try {
+                val before = playback.state.value
+                if (before.tourId != tour.id || !before.playing || !before.ready) {
+                    notificationPermission()
+                    playback.play(tour)
+                    playerTourId = tour.id
+                }
+                val ready = withTimeoutOrNull(15_000) {
+                    playback.state.first { it.error != null || (it.tourId == tour.id && it.ready && it.playing) }
+                }
+                if (ready == null || ready.error != null) {
+                    report(ready?.error ?: "Could not start this tour. Please try again.")
+                } else if (session.state.value.role == "none" && playback.state.value.tourId == tour.id) {
+                    session.host()
+                    if (session.state.value.role == "host") navigate(2)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                report("Could not start the session. Please try again.")
+            } finally {
+                startingSession = false
+            }
+        }
+    }
+    val bluetooth = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val tour = pendingSessionTourId?.let { repository.installed.value[it]?.tour }
+        pendingSessionTourId = null
+        if (!granted) report("Allow Nearby devices permission to start a session.")
+        else if (tour != null) startSession(tour)
+    }
+    fun requestSession(tour: Tour) {
+        if (startingSession || pendingSessionTourId != null) return
+        sharingDialog = false
+        if (Build.VERSION.SDK_INT >= 31 && context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            pendingSessionTourId = tour.id
+            bluetooth.launch(Manifest.permission.BLUETOOTH_CONNECT)
+        } else startSession(tour)
     }
 
     LaunchedEffect(Unit) { refresh() }
@@ -159,8 +202,9 @@ fun TourApp(
                             }
                         }) { Icon(Icons.Outlined.DeleteOutline, "Delete download", tint = MaterialTheme.colorScheme.error) }
                     } else if (selected == null && screen == 1 && playingTour != null) {
-                        IconButton(onClick = { if (group.role != "none") navigate(2) else sharingDialog = true }) {
-                            Icon(Icons.Outlined.Group, if (group.role != "none") "Open the shared session" else "Share this tour")
+                        IconButton(onClick = { if (group.role != "none") navigate(2) else sharingDialog = true }, enabled = !startingSession && pendingSessionTourId == null) {
+                            if (startingSession) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                            else Icon(Icons.Outlined.Group, if (group.role != "none") "Go to session" else "Share this tour")
                         }
                     }
                 },
@@ -183,7 +227,8 @@ fun TourApp(
                 } else Column(Modifier.fillMaxSize().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                     EmptyState(Icons.Outlined.Headphones, "Nothing playing", "Start a tour from Explore to listen here.")
                 }
-                2 -> TogetherScreen(session, repository, playback, current, onOpenPlayer = { navigate(1) }, report = report)
+                2 -> TogetherScreen(session, repository, playback, current, startingSession,
+                    onStartSession = { current?.let(::requestSession) }, onOpenPlayer = { navigate(1) }, report = report)
                 else -> savedScreens.SaveableStateProvider("explore") {
                     ExploreScreen(tours, installed, downloads, refreshing, repository, player.tourId,
                         onSelect = { selectedId = it.id }, onDownload = ::download, onCancel = repository::cancelDownload,
@@ -248,22 +293,13 @@ fun TourApp(
             },
         )
     }
-    if (sharingDialog) {
-        val ready = player.durationMs > 0
-        AlertDialog(onDismissRequest = { sharingDialog = false }, title = { Text("Share this tour?") },
-            text = {
-                Text(
-                    if (ready) "Friends join from Together on their paired phones and listen over Bluetooth."
-                    else "Friends join from Together on their paired phones and listen over Bluetooth.\n\nWait for the tour to load before starting.",
-                )
-            },
+    if (sharingDialog && playingTour != null) {
+        AlertDialog(onDismissRequest = { sharingDialog = false }, title = { Text("Start a session?") },
+            text = { Text("Friends can join from Together on their paired phones and listen with you over Bluetooth.") },
             confirmButton = {
-                TextButton(shape = MaterialTheme.shapes.small, onClick = {
-                    sharingDialog = false
-                    if (Build.VERSION.SDK_INT >= 31 && context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                        bluetooth.launch(Manifest.permission.BLUETOOTH_CONNECT)
-                    } else session.host()
-                }) { Text("Start sharing") }
+                TextButton(shape = MaterialTheme.shapes.small, onClick = { requestSession(playingTour) }) {
+                    Text(if (player.tourId == playingTour.id && player.playing) "Start session" else "Start tour and share")
+                }
             },
             dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { sharingDialog = false }) { Text("Cancel") } },
         )

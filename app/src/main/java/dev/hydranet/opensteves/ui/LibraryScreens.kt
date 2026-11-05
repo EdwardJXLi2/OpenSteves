@@ -203,7 +203,7 @@ internal fun ExploreScreen(
         if (filtered.isEmpty() && !refreshing && (tours.isEmpty() || query.isNotBlank() || region != null || installed.isEmpty())) item(key = "empty") {
             LibraryEmptyState(
                 Icons.Default.TravelExplore,
-                if (tours.isEmpty()) "No tours loaded" else "No matching tours",
+                if (tours.isEmpty()) "No tours available" else "No matching tours",
                 if (tours.isEmpty()) "Connect to the internet and refresh the catalog." else "Try another city or region.",
             )
         }
@@ -242,7 +242,7 @@ private fun CatalogRow(
         downloading -> "Downloading ${download.progress.coerceIn(0, 100)}%"
         download?.error != null -> "Download failed"
         updating -> "Update available"
-        installed != null -> "${bytes(installed.sizeBytes)} / ${if (current) "In player" else "Downloaded"}"
+        installed != null -> "${bytes(installed.sizeBytes)} / ${if (current) "Current tour" else "Downloaded"}"
         else -> bytes(tour.bytes)
     }
     Column {
@@ -265,7 +265,7 @@ private fun CatalogRow(
                     Icon(if (download?.error != null) Icons.Default.Refresh else Icons.Default.Download, "Download ${displayTitle(tour)}", tint = MaterialTheme.colorScheme.primary)
                 }
                 else -> IconButton(onClick = onPlay) {
-                    Icon(Icons.Default.PlayArrow, "Play ${displayTitle(tour)}", tint = MaterialTheme.colorScheme.primary)
+                    Icon(Icons.Default.PlayArrow, "Start ${displayTitle(tour)}", tint = MaterialTheme.colorScheme.primary)
                 }
             }
         }
@@ -319,7 +319,7 @@ internal fun TourInfoScreen(
                         Text("Available offline", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
                     }
                     Button(shape = MaterialTheme.shapes.small, onClick = if (loaded) onOpenPlayer else onPlay, enabled = canPlay, modifier = Modifier.fillMaxWidth().height(48.dp)) {
-                        Text(if (loaded) "Open player" else "Play tour")
+                        Text(if (loaded) "Back to tour" else "Start tour")
                     }
                     if (sessionActive && !loaded) Text("Leave the session to play a different tour.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }

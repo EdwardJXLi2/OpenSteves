@@ -66,7 +66,7 @@ internal fun ZoomableMap(file: File?, title: String) {
     var offset by remember(file) { mutableStateOf(Offset.Zero) }
     if (file == null) { EmptyState(Icons.Default.Map, "No map for this audio", "Maps are included with walking tours."); return }
     if (loaded.loading) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }; return }
-    if (bitmap == null) { EmptyState(Icons.Default.Map, "Could not open this map", "Delete and download the tour again to restore its map."); return }
+    if (bitmap == null) { EmptyState(Icons.Default.Map, "Could not display this map", "Delete and download the tour again to restore its map."); return }
     Box(Modifier.fillMaxSize().background(Color.White).padding(12.dp)) {
         Box(Modifier.fillMaxSize().clipToBounds().pointerInput(file) {
             detectTransformGestures { _, pan, zoom, _ ->

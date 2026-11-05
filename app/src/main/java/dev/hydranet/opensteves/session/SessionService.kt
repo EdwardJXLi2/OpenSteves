@@ -34,7 +34,7 @@ class SessionService : Service() {
         connection.addListener({
             if (!destroying) {
                 runCatching { connection.get() }.onFailure {
-                    SessionManager.get(this).fail("The audio player could not connect. Reopen the tour and try again.")
+                    SessionManager.get(this).fail("The tour could not start. Please start it again and retry the session.")
                 }
             }
         }, ContextCompat.getMainExecutor(this))

@@ -87,11 +87,11 @@ class SessionManager private constructor(private val context: Context) {
     fun host() {
         if (!canStart()) return
         if (playback?.snapshot() == null) {
-            fail("Open a downloaded tour before hosting a session.")
+            fail("Start a tour from Explore before hosting a session.")
             return
         }
         if (playback?.isReady() != true) {
-            fail("Wait for the tour to load before hosting a session.")
+            fail("The tour is still starting. Please try again in a moment.")
             return
         }
         start(SessionService.ACTION_HOST)
@@ -104,7 +104,7 @@ class SessionManager private constructor(private val context: Context) {
             return
         }
         if (playback == null) {
-            fail("The audio player is still connecting. Try again.")
+            fail("Still getting ready. Please try again in a moment.")
             return
         }
         start(SessionService.ACTION_JOIN, address)
@@ -144,7 +144,7 @@ class SessionManager private constructor(private val context: Context) {
         resetConnections()
         val snapshot = playback?.snapshot()
         if (snapshot == null || playback?.isReady() != true) {
-            fail("Open a downloaded tour and wait for it to load before hosting a session.")
+            fail("Start a tour from Explore, then try hosting again.")
             return
         }
         mutableState.value = SessionState("host", "Waiting for friends to join")
@@ -391,7 +391,7 @@ class SessionManager private constructor(private val context: Context) {
                             }
                             delay(100)
                         }
-                        fail("The tour could not prepare for synchronized playback. Reopen it, then join again.")
+                        fail("Could not sync this tour. Start it again, then rejoin the session.")
                     }
                 }
                 "pong" -> {

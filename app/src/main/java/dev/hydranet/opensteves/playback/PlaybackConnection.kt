@@ -25,6 +25,7 @@ data class PlaybackUiState(
     val durationMs: Long = 0,
     val speed: Float = 1f,
     val error: String? = null,
+    val ready: Boolean = false,
 )
 
 class PlaybackConnection(context: Context) {
@@ -44,7 +45,7 @@ class PlaybackConnection(context: Context) {
                     override fun onEvents(player: Player, events: Player.Events) = update()
                 })
                 update()
-            }.onFailure { mutableState.value = mutableState.value.copy(error = "Cannot connect to the audio player.") }
+            }.onFailure { mutableState.value = mutableState.value.copy(error = "Could not start playback. Please try again.") }
         }, ContextCompat.getMainExecutor(context))
         scope.launch { while (true) { update(); delay(200) } }
     }
@@ -57,14 +58,16 @@ class PlaybackConnection(context: Context) {
             positionMs = player.currentPosition.coerceAtLeast(0),
             durationMs = player.duration.coerceAtLeast(0),
             speed = player.playbackParameters.speed,
+            ready = player.playbackState == Player.STATE_READY,
             error = player.playerError?.let { "Audio playback failed: ${it.errorCodeName}" } ?: commandError,
         )
     }
 
     fun play(tour: Tour, positionMs: Long? = null) {
         commandError = null
+        mutableState.value = mutableState.value.copy(error = null)
         val player = controller ?: run {
-            mutableState.value = mutableState.value.copy(error = "The audio player is connecting. Try again.")
+            mutableState.value = mutableState.value.copy(error = "Still getting ready. Please try again in a moment.")
             return
         }
         val result = player.sendCustomCommand(SessionCommand(PlaybackService.OPEN_TOUR, Bundle.EMPTY),
@@ -72,7 +75,7 @@ class PlaybackConnection(context: Context) {
         result.addListener({
             runCatching { result.get() }.onSuccess {
                 if (it.resultCode != androidx.media3.session.SessionResult.RESULT_SUCCESS) {
-                    commandError = "Download this tour first, or leave the group to change tours."
+                    commandError = "Download this tour first, or leave the session to start a different tour."
                     update()
                 }
             }
