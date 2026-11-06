@@ -39,6 +39,7 @@ jobs:
           cache-provider: basic
 
       - name: Build debug APK and run unit tests
+        if: github.event_name == 'pull_request'
         run: ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug
 
       - name: Restore release keystore
@@ -57,17 +58,18 @@ jobs:
           printf '%s' "$OPENSTEVES_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/keystores/opensteves-release.jks"
           chmod 600 "$RUNNER_TEMP/keystores/opensteves-release.jks"
 
-      - name: Build signed release APK
+      - name: Build signed APKs and run unit tests
         if: github.event_name != 'pull_request'
         env:
           OPENSTEVES_KEYSTORE_FILE: ${{ runner.temp }}/keystores/opensteves-release.jks
           OPENSTEVES_KEYSTORE_PASSWORD: ${{ secrets.OPENSTEVES_KEYSTORE_PASSWORD }}
           OPENSTEVES_KEY_ALIAS: ${{ secrets.OPENSTEVES_KEY_ALIAS }}
           OPENSTEVES_KEY_PASSWORD: ${{ secrets.OPENSTEVES_KEY_PASSWORD }}
-        run: ./gradlew --no-daemon :app:assembleRelease
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease
 
-      - name: Stage debug APK
+      - name: Verify and stage debug APK
         run: |
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose app/build/outputs/apk/debug/app-debug.apk
           mkdir -p dist
           cp app/build/outputs/apk/debug/app-debug.apk dist/opensteves-debug-latest.apk
 

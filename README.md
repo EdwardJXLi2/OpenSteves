@@ -55,7 +55,8 @@ The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
 ## APK builds and signing
 
 GitHub Actions builds debug APKs for pull requests to `main` and `master`.
-Pushes to these branches, `v*` tags, and manual runs also build signed release APKs and publish them to the `latest` GitHub Release.
+Pushes to these branches, `v*` tags, and manual runs sign both APK variants with the configured key.
+These runs publish both APKs to the `latest` GitHub Release.
 
 Non-PR builds require these GitHub repository secrets:
 
@@ -68,9 +69,9 @@ Non-PR builds require these GitHub repository secrets:
 
 Use one stable signing key for this app and keep a secure backup.
 
-Local release builds use `OPENSTEVES_KEYSTORE_FILE`, `OPENSTEVES_KEYSTORE_PASSWORD`, `OPENSTEVES_KEY_ALIAS`, and `OPENSTEVES_KEY_PASSWORD`.
+Local signing uses `OPENSTEVES_KEYSTORE_FILE`, `OPENSTEVES_KEYSTORE_PASSWORD`, `OPENSTEVES_KEY_ALIAS`, and `OPENSTEVES_KEY_PASSWORD` for both variants.
 Set `OPENSTEVES_KEYSTORE_FILE` to the absolute keystore path, then run `./gradlew :app:assembleRelease`.
-Without these variables, local release builds produce an unsigned APK.
+Without these variables, local debug builds use the standard debug key and release builds produce an unsigned APK.
 
 ## APK Repository publishing
 
