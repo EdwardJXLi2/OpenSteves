@@ -73,6 +73,7 @@ class SessionManager private constructor(private val context: Context) {
     private var lastDriftMs: Long? = null
     private var automaticSeeks = 0L
     private val driftCorrection = SessionDriftCorrection()
+    private val playbackDebouncer = SessionPlaybackDebouncer()
 
     private class Peer(val socket: BluetoothSocket, val address: String, val name: String, val debugId: Int) {
         val outgoing = Channel<ByteArray>(16)
@@ -135,6 +136,7 @@ class SessionManager private constructor(private val context: Context) {
             .putLong("peer_timeout_ms", settings.peerTimeoutMs)
             .putLong("clock_sample_age_ms", settings.clockSampleMaxAgeMs)
             .putLong("max_clock_rtt_ms", settings.maxClockRttMs)
+            .putLong("play_pause_debounce_ms", settings.playPauseDebounceMs)
             .apply()
         mutableDebugSettings.value = settings
         driftCorrection.resetSamples()
@@ -155,6 +157,7 @@ class SessionManager private constructor(private val context: Context) {
             peerTimeoutMs = debugPreferences.getLong("peer_timeout_ms", defaults.peerTimeoutMs),
             clockSampleMaxAgeMs = debugPreferences.getLong("clock_sample_age_ms", defaults.clockSampleMaxAgeMs),
             maxClockRttMs = debugPreferences.getLong("max_clock_rtt_ms", defaults.maxClockRttMs),
+            playPauseDebounceMs = debugPreferences.getLong("play_pause_debounce_ms", defaults.playPauseDebounceMs),
         ).takeIf { it.validationError() == null } ?: defaults
     }
 
@@ -394,13 +397,14 @@ class SessionManager private constructor(private val context: Context) {
         } else {
             val peer = peers.values.firstOrNull()
             if (peer?.ready == true) {
-                send(peer, frame("command").put("action", command.action).put("position", command.positionMs).put("speed", command.speed))
+                send(peer, frame("command").put("action", command.action).put("position", command.positionMs)
+                    .put("speed", command.speed).put("interruption", command.interruption))
             } else debug("COMMAND", "Ignored command while host connection is not ready")
         }
         return true
     }
 
-    private fun scheduleCommand(command: PlaybackCommand) {
+    private fun scheduleCommand(command: PlaybackCommand, source: String? = null) {
         if (hostSchedule.size >= 64) {
             debug("COMMAND", "Ignored command: schedule is full")
             return
@@ -411,11 +415,16 @@ class SessionManager private constructor(private val context: Context) {
         val previous = queued
             ?: playback?.snapshot()?.let { it to now }
             ?: return
+        if (!playbackDebouncer.shouldAccept(command, previous.first.playing, source, now, debugSettings.value.playPauseDebounceMs)) {
+            debug("COMMAND", "Ignored duplicate or debounced ${command.action}")
+            return
+        }
         val at = maxOf(now + schedulingLeadMs, queued?.second?.plus(1) ?: now)
         val target = SessionTiming.scheduled(previous.first, previous.second, command, at)
         val seek = command.action != "speed"
         val seq = broadcastState(target, at, force = true, seek = seek)
         hostSchedule[seq] = target to at
+        playbackDebouncer.scheduled(command, source, now)
         debug("SCHEDULE", "${command.action}: sequence=$seq, lead=${at - now()} ms")
         scope.launch {
             delay((at - now()).coerceAtLeast(0))
@@ -517,9 +526,10 @@ class SessionManager private constructor(private val context: Context) {
                     refreshPeers()
                 }
                 "command" -> if (peer.ready) {
-                    val command = PlaybackCommand(message.getString("action"), message.optLong("position"), message.optDouble("speed", 1.0).toFloat())
+                    val command = PlaybackCommand(message.getString("action"), message.optLong("position"),
+                        message.optDouble("speed", 1.0).toFloat(), interruption = message.optBoolean("interruption"))
                     require(SessionTiming.valid(command))
-                    scheduleCommand(command)
+                    scheduleCommand(command, source = peer.address)
                 }
                 else -> throw IOException("Unexpected session frame")
             }
@@ -736,6 +746,7 @@ class SessionManager private constructor(private val context: Context) {
         automaticSeeks = 0
         hostSchedulingLeadMs = null
         driftCorrection.reset()
+        playbackDebouncer.reset()
     }
 
     private fun adapter(): BluetoothAdapter? = context.getSystemService(BluetoothManager::class.java)?.adapter

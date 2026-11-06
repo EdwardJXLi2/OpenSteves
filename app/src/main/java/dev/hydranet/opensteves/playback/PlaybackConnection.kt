@@ -82,7 +82,7 @@ class PlaybackConnection(context: Context) {
         }, { task -> scope.launch { task.run() }; Unit })
     }
 
-    fun toggle() { controller?.let { if (it.playWhenReady) it.pause() else it.play() } }
+    fun setPlaying(playing: Boolean) { controller?.let { if (playing) it.play() else it.pause() } }
     fun seek(positionMs: Long) { controller?.seekTo(positionMs.coerceAtLeast(0)) }
     fun setSpeed(speed: Float) { controller?.setPlaybackSpeed(speed.coerceIn(0.5f, 2f)) }
     fun stop() { controller?.stop() }

@@ -161,7 +161,7 @@ class PlaybackService : MediaSessionService(), SessionPlayback {
             interrupted = true
             interruptionDeadline = SystemClock.elapsedRealtime() + groups.schedulingLeadMs
             player.pause()
-            groups.request(PlaybackCommand("pause"))
+            groups.request(PlaybackCommand("pause", interruption = true))
         }
     }
 

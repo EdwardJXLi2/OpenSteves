@@ -11,6 +11,7 @@ internal data class SessionDebugSettings(
     val peerTimeoutMs: Long = 12_000,
     val clockSampleMaxAgeMs: Long = 30_000,
     val maxClockRttMs: Long = 5_000,
+    val playPauseDebounceMs: Long = 2_000,
 ) {
     fun validationError(): String? = when {
         pausedDriftToleranceMs !in 0..10_000 -> "Paused drift tolerance must be between 0 and 10000 ms."
@@ -25,6 +26,7 @@ internal data class SessionDebugSettings(
             "Connection timeout must be at least three clock sync intervals and at most 120000 ms."
         clockSampleMaxAgeMs !in 1_000..300_000 -> "Clock sample age limit must be between 1000 and 300000 ms."
         maxClockRttMs !in 1..10_000 -> "Clock RTT limit must be between 1 and 10000 ms."
+        playPauseDebounceMs !in 0..5_000 -> "Play/pause debounce must be between 0 and 5000 ms."
         else -> null
     }
 }

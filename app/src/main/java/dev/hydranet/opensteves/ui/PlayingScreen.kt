@@ -211,7 +211,7 @@ private fun PlayerControls(state: PlaybackUiState, active: Boolean, canPlay: Boo
                 }
             }
             SeekButton(Icons.Default.Replay, "Back 20 seconds", active) { playback.seek((state.positionMs - 20_000).coerceAtLeast(0)) }
-            FilledIconButton(onClick = { if (active) playback.toggle() else onPlay() }, enabled = canPlay, modifier = Modifier.size(64.dp), shape = androidx.compose.foundation.shape.CircleShape) {
+            FilledIconButton(onClick = { if (active) playback.setPlaying(!state.playing) else onPlay() }, enabled = canPlay, modifier = Modifier.size(64.dp), shape = androidx.compose.foundation.shape.CircleShape) {
                 Icon(if (active && state.playing) Icons.Default.Pause else Icons.Default.PlayArrow, if (active && state.playing) "Pause" else "Play", Modifier.size(34.dp))
             }
             SeekButton(Icons.Default.FastForward, "Forward 20 seconds", active) { playback.seek((state.positionMs + 20_000).coerceAtMost(state.durationMs)) }

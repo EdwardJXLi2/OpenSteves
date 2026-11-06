@@ -176,7 +176,7 @@ private fun DebugSettingsDialog(settings: SessionDebugSettings, onDismiss: () ->
 private val debugSettingLabels = listOf(
     "Paused drift tolerance", "Playing drift threshold", "Consecutive samples", "Correction cooldown",
     "Scheduling lead (host)", "Clock sync interval", "Playback sync (host)",
-    "Connection timeout", "Clock sample age limit", "Clock RTT limit",
+    "Connection timeout", "Clock sample age limit", "Clock RTT limit", "Play/pause debounce (host)",
 )
 
 private fun settingsValues(settings: SessionDebugSettings): List<String> = listOf(
@@ -184,6 +184,7 @@ private fun settingsValues(settings: SessionDebugSettings): List<String> = listO
     settings.requiredDriftSamples.toString(), settings.correctionCooldownMs.toString(),
     settings.schedulingLeadMs.toString(), settings.clockSyncIntervalMs.toString(), settings.playbackSyncIntervalMs.toString(),
     settings.peerTimeoutMs.toString(), settings.clockSampleMaxAgeMs.toString(), settings.maxClockRttMs.toString(),
+    settings.playPauseDebounceMs.toString(),
 )
 
 private fun parseDebugSettings(values: List<String>): SessionDebugSettings? {
@@ -194,6 +195,7 @@ private fun parseDebugSettings(values: List<String>): SessionDebugSettings? {
         schedulingLeadMs = numbers[4].toLong(), clockSyncIntervalMs = numbers[5].toLong(),
         playbackSyncIntervalMs = numbers[6].toLong(), peerTimeoutMs = numbers[7].toLong(),
         clockSampleMaxAgeMs = numbers[8].toLong(), maxClockRttMs = numbers[9].toLong(),
+        playPauseDebounceMs = numbers[10].toLong(),
     )
 }
 

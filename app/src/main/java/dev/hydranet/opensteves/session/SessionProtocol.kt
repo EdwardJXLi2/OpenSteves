@@ -10,7 +10,7 @@ data class SessionState(
 
 data class SessionPeer(val address: String, val name: String)
 
-data class PlaybackCommand(val action: String, val positionMs: Long = 0, val speed: Float = 1f)
+data class PlaybackCommand(val action: String, val positionMs: Long = 0, val speed: Float = 1f, val interruption: Boolean = false)
 
 data class PlaybackSnapshot(
     val tourId: Int,
@@ -54,10 +54,13 @@ internal object SessionTiming {
         }
     }
 
-    fun valid(command: PlaybackCommand): Boolean = when (command.action) {
-        "play", "pause", "stop" -> true
-        "seek" -> command.positionMs in 0..MAX_POSITION_MS
-        "speed" -> command.speed.isFinite() && command.speed in 0.5f..2f
-        else -> false
+    fun valid(command: PlaybackCommand): Boolean {
+        if (command.interruption && command.action != "pause") return false
+        return when (command.action) {
+            "play", "pause", "stop" -> true
+            "seek" -> command.positionMs in 0..MAX_POSITION_MS
+            "speed" -> command.speed.isFinite() && command.speed in 0.5f..2f
+            else -> false
+        }
     }
 }

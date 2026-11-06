@@ -186,7 +186,8 @@ internal fun TogetherScreen(
                     }
                 }
                 current?.let { tour ->
-                    SessionTour(repository, tour, player, onOpenPlayer, playback::toggle)
+                    val playbackState = player
+                    SessionTour(repository, tour, playbackState, onOpenPlayer, onToggle = { playback.setPlaying(!playbackState.playing) })
                 }
                 SessionSection(if (host) {
                     if (state.peers.isEmpty()) "Waiting for friends" else "Connected phones"
