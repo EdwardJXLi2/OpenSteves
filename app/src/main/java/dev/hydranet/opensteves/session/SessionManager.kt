@@ -54,8 +54,12 @@ class SessionManager private constructor(private val context: Context) {
     private val peers = mutableMapOf<String, Peer>()
     private var correction: Job? = null
     private var guestApplyTail: Job? = null
-    private val hostSchedule = linkedMapOf<Long, Pair<PlaybackSnapshot, Long>>()
-    private val guestSchedule = mutableSetOf<Long>()
+    private val hostSchedule = linkedMapOf<Long, ScheduledPlayback>()
+    private val guestSchedule = linkedMapOf<Long, ScheduledPlayback>()
+    private val pendingRequests = linkedMapOf<Long, PendingRequest>()
+    private var nextRequestId = 0L
+    private val mutablePendingPlayback = MutableStateFlow<ScheduledPlayback?>(null)
+    internal val pendingPlayback: StateFlow<ScheduledPlayback?> = mutablePendingPlayback.asStateFlow()
     private var generation = 0L
     private var sequence = 0L
     private var receivedSequence = -1L
@@ -75,10 +79,13 @@ class SessionManager private constructor(private val context: Context) {
     private val driftCorrection = SessionDriftCorrection()
     private val playbackDebouncer = SessionPlaybackDebouncer()
 
+    private data class PendingRequest(val playback: ScheduledPlayback, val timeout: Job)
+
     private class Peer(val socket: BluetoothSocket, val address: String, val name: String, val debugId: Int) {
         val outgoing = Channel<ByteArray>(16)
         var ready = false
         var acceptsPing = false
+        var commandReceipts = false
         var lastReceived = SystemClock.elapsedRealtime()
         var sentFrames = 0L
         var receivedFrames = 0L
@@ -121,6 +128,21 @@ class SessionManager private constructor(private val context: Context) {
             playback = playback?.snapshot(),
             playbackDiagnostics = playback?.diagnostics(),
         )
+    }
+
+    internal fun playbackForUi(): PlaybackSnapshot? {
+        if (state.value.role == "none") return null
+        return pendingPlayback.value?.project(now()) ?: playback?.snapshot()
+    }
+
+    private fun refreshPendingPlayback() {
+        mutablePendingPlayback.value = pendingRequests.values.lastOrNull()?.playback
+            ?: if (state.value.role == "host") hostSchedule.values.lastOrNull() else guestSchedule.values.lastOrNull()
+    }
+
+    private fun completeRequest(requestId: Long) {
+        pendingRequests.remove(requestId)?.timeout?.cancel()
+        refreshPendingPlayback()
     }
 
     internal fun updateDebugSettings(settings: SessionDebugSettings) {
@@ -278,7 +300,8 @@ class SessionManager private constructor(private val context: Context) {
                                         val peer = register(socket)
                                         accepted = true
                                         val greeting = playback?.snapshot() ?: snapshot
-                                        send(peer, frame("hello").put("audio", encode(greeting)).put("lead", schedulingLeadMs))
+                                        send(peer, frame("hello").put("audio", encode(greeting))
+                                            .put("lead", schedulingLeadMs).put("commandReceipts", true))
                                         refreshPeers()
                                     } else if (generation == currentGeneration) {
                                         debug("CONNECTION", "Rejected connection: unpaired or duplicate")
@@ -397,8 +420,27 @@ class SessionManager private constructor(private val context: Context) {
         } else {
             val peer = peers.values.firstOrNull()
             if (peer?.ready == true) {
+                if (pendingRequests.size >= 64) {
+                    debug("COMMAND", "Ignored command: waiting for host responses")
+                    return true
+                }
+                val now = now()
+                val previous = pendingPlayback.value ?: playback?.snapshot()?.let { ScheduledPlayback(it, now) }
+                    ?: return true
+                val at = maxOf(now + schedulingLeadMs, previous.atMs)
+                val target = SessionTiming.scheduled(previous.snapshot, previous.atMs, command, at)
+                val requestId = ++nextRequestId
+                val timeout = scope.launch {
+                    delay(debugSettings.value.peerTimeoutMs)
+                    if (pendingRequests.remove(requestId) != null) {
+                        debug("COMMAND", "Host response timed out for request=$requestId")
+                        refreshPendingPlayback()
+                    }
+                }
+                pendingRequests[requestId] = PendingRequest(ScheduledPlayback(target, at), timeout)
+                refreshPendingPlayback()
                 send(peer, frame("command").put("action", command.action).put("position", command.positionMs)
-                    .put("speed", command.speed).put("interruption", command.interruption))
+                    .put("speed", command.speed).put("interruption", command.interruption).put("request", requestId))
             } else debug("COMMAND", "Ignored command while host connection is not ready")
         }
         return true
@@ -413,17 +455,18 @@ class SessionManager private constructor(private val context: Context) {
         // Earlier commands must execute at their original deadlines for this projection to remain valid.
         val queued = hostSchedule.values.lastOrNull()
         val previous = queued
-            ?: playback?.snapshot()?.let { it to now }
+            ?: playback?.snapshot()?.let { ScheduledPlayback(it, now) }
             ?: return
-        if (!playbackDebouncer.shouldAccept(command, previous.first.playing, source, now, debugSettings.value.playPauseDebounceMs)) {
+        if (!playbackDebouncer.shouldAccept(command, previous.snapshot.playing, source, now, debugSettings.value.playPauseDebounceMs)) {
             debug("COMMAND", "Ignored duplicate or debounced ${command.action}")
             return
         }
-        val at = maxOf(now + schedulingLeadMs, queued?.second?.plus(1) ?: now)
-        val target = SessionTiming.scheduled(previous.first, previous.second, command, at)
+        val at = maxOf(now + schedulingLeadMs, queued?.atMs?.plus(1) ?: now)
+        val target = SessionTiming.scheduled(previous.snapshot, previous.atMs, command, at)
         val seek = command.action != "speed"
         val seq = broadcastState(target, at, force = true, seek = seek)
-        hostSchedule[seq] = target to at
+        hostSchedule[seq] = ScheduledPlayback(target, at)
+        refreshPendingPlayback()
         playbackDebouncer.scheduled(command, source, now)
         debug("SCHEDULE", "${command.action}: sequence=$seq, lead=${at - now()} ms")
         scope.launch {
@@ -431,6 +474,7 @@ class SessionManager private constructor(private val context: Context) {
             playback?.apply(target.copy(positionMs = SessionTiming.position(target, at, now())), seek = seek)
             debug("APPLY", "Host sequence=$seq, lateness=${(now() - at).coerceAtLeast(0)} ms")
             hostSchedule.remove(seq)
+            refreshPendingPlayback()
         }
     }
 
@@ -519,8 +563,8 @@ class SessionManager private constructor(private val context: Context) {
                     peer.acceptsPing = message.optBoolean("acceptsPing")
                     debug("CONNECTION", "Peer ${peer.debugId} ready")
                     val queued = hostSchedule.values.lastOrNull()
-                    val at = maxOf(now() + schedulingLeadMs, queued?.second ?: 0)
-                    val target = queued?.let { it.first.copy(positionMs = SessionTiming.position(it.first, it.second, at)) }
+                    val at = maxOf(now() + schedulingLeadMs, queued?.atMs ?: 0)
+                    val target = queued?.project(at)
                         ?: playback?.snapshot()?.let { it.copy(positionMs = SessionTiming.position(it, now(), at)) }
                     if (target != null) sendState(peer, target, at, ++sequence, force = true)
                     refreshPeers()
@@ -530,6 +574,13 @@ class SessionManager private constructor(private val context: Context) {
                         message.optDouble("speed", 1.0).toFloat(), interruption = message.optBoolean("interruption"))
                     require(SessionTiming.valid(command))
                     scheduleCommand(command, source = peer.address)
+                    val requestId = message.optLong("request")
+                    if (requestId > 0) {
+                        val reply = hostSchedule.values.lastOrNull()
+                            ?: playback?.snapshot()?.let { ScheduledPlayback(it, now()) }
+                        if (reply != null) sendState(peer, reply.snapshot, reply.atMs, ++sequence,
+                            force = false, requestId = requestId)
+                    }
                 }
                 else -> throw IOException("Unexpected session frame")
             }
@@ -538,6 +589,7 @@ class SessionManager private constructor(private val context: Context) {
                 "removed" -> fail("The host removed you from the session. Your playback is paused.")
                 "hello" -> {
                     require(hostGreeting == null)
+                    peer.commandReceipts = message.optBoolean("commandReceipts")
                     readHostSchedulingLead(message)
                     val audio = decode(message.getJSONObject("audio"))
                     if (playback?.hasAudio(audio.tourId, audio.hash) != true) {
@@ -622,6 +674,12 @@ class SessionManager private constructor(private val context: Context) {
         receivedSequence = seq
         val force = message.optBoolean("force")
         val requestedSeek = message.optBoolean("seek", true)
+        val requestId = message.optLong("request")
+        if (requestId > 0) completeRequest(requestId)
+        if (force && peers.values.firstOrNull()?.commandReceipts != true) {
+            pendingRequests.values.forEach { it.timeout.cancel() }
+            pendingRequests.clear()
+        }
         if (force) correction?.cancel()
         if (!force && (guestSchedule.isNotEmpty() || correction?.isActive == true)) {
             debug("SYNC", "Skipped periodic state while an earlier update is pending")
@@ -629,7 +687,8 @@ class SessionManager private constructor(private val context: Context) {
         }
         if (force) {
             require(guestSchedule.size < 64)
-            guestSchedule.add(seq)
+            guestSchedule[seq] = ScheduledPlayback(target, at)
+            refreshPendingPlayback()
         }
         val previous = guestApplyTail
         val apply = scope.launch {
@@ -653,6 +712,7 @@ class SessionManager private constructor(private val context: Context) {
                 debug("APPLY", "Guest sequence=$seq, forced=$force, seek=$seek, drift=$lastDriftMs ms, lateness=${(now() - at).coerceAtLeast(0)} ms")
             }
             guestSchedule.remove(seq)
+            refreshPendingPlayback()
         }
         if (force) guestApplyTail = apply else correction = apply
     }
@@ -700,9 +760,11 @@ class SessionManager private constructor(private val context: Context) {
         return seq
     }
 
-    private fun sendState(peer: Peer, snapshot: PlaybackSnapshot, at: Long, seq: Long, force: Boolean, seek: Boolean = true) {
+    private fun sendState(peer: Peer, snapshot: PlaybackSnapshot, at: Long, seq: Long, force: Boolean,
+        seek: Boolean = true, requestId: Long? = null) {
         send(peer, frame("state").put("audio", encode(snapshot)).put("at", at).put("sequence", seq)
-            .put("force", force).put("seek", seek).put("lead", schedulingLeadMs))
+            .put("force", force).put("seek", seek).put("lead", schedulingLeadMs)
+            .apply { requestId?.let { put("request", it) } })
     }
 
     private fun send(peer: Peer, message: JSONObject) {
@@ -736,6 +798,9 @@ class SessionManager private constructor(private val context: Context) {
         guestApplyTail = null
         hostSchedule.clear()
         guestSchedule.clear()
+        pendingRequests.clear()
+        nextRequestId = 0
+        mutablePendingPlayback.value = null
         receivedSequence = -1
         sequence = 0
         selectedClockRttMs = Long.MAX_VALUE

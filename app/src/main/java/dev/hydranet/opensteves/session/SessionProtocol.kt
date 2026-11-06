@@ -20,6 +20,10 @@ data class PlaybackSnapshot(
     val speed: Float,
 )
 
+internal data class ScheduledPlayback(val snapshot: PlaybackSnapshot, val atMs: Long) {
+    fun project(nowMs: Long): PlaybackSnapshot = snapshot.copy(positionMs = SessionTiming.position(snapshot, atMs, nowMs))
+}
+
 interface SessionPlayback {
     fun snapshot(): PlaybackSnapshot?
     fun diagnostics(): PlaybackDiagnostics
