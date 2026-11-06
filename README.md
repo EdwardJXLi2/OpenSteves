@@ -1,48 +1,38 @@
 # OpenSteves
 
-An independent Android player for Rick Steves Audio Europe, built with Kotlin, Jetpack Compose, and Material 3.
+Open Source Android Player for [Rick Steves Europe Audio Tours](https://www.ricksteves.com/watch-read-listen/audio/audio-tours)
 
-Download tours for offline listening, read transcripts, and view maps with pan and zoom controls.
-Media3 provides background playback, media notifications, and lock-screen controls.
+Download tours for offline listening, read transcripts, and view maps.
+Playback continues in the background with notification and lock-screen controls.
 
 Requires Android 8.0 (API 26) or later.
 
-## Tours and subtitles
+## Offline tours
 
-The catalog and tour bundles come from the public Rick Steves Audio Europe servers.
-Internet access is required to load the catalog and download tours.
-Downloaded tours remain available offline.
-Downloaded tours appear at the top of **Explore**.
-Open a downloaded tour, then select **Delete download** in the toolbar to remove it.
+Internet access is required to load the catalog and download tours from the Rick Steves Audio Europe servers.
+Downloaded tours, maps, and transcripts remain available offline.
+
 Stop the current tour before deleting or updating its download.
 
-The app follows the system theme until you select the sun or moon icon in **Explore**.
-The app saves the selected appearance on the device.
-
-Walking tours include maps and untimed transcripts.
-Bundled VTT files generally contain chapter and image cues, not spoken captions.
-Previously saved subtitles remain available offline.
+Walking tour transcripts are not timed captions.
 
 ## Listen together
 
-Each phone plays its own downloaded audio while Bluetooth carries playback commands and timing updates.
-The session requires no Wi-Fi or mobile data. Each session has one host.
+Listen to the same tour on multiple phones through a shared Bluetooth session.
+Each phone plays its own downloaded audio, so the session requires no Wi-Fi or mobile data.
 
 1. Download the same tour revision on every phone before leaving internet coverage.
 2. Pair each guest phone with the host through Android Bluetooth settings.
 3. Start the downloaded tour on the host, then select **Start a session** in **Together**.
 4. On each guest, open **Together**, select **Show paired phones**, then select the host.
 
-Everyone can play, pause, seek, stop, and change speed between 0.5× and 2×.
-The host orders commands and schedules playback changes 600 ms ahead.
-Guests check audio hashes, estimate clock offsets, and correct playback drift from periodic host updates.
+Everyone can control playback.
 Keep Bluetooth enabled and the phones within range.
 Leaving or losing the host pauses guest playback. Rejoin manually after restoring the connection.
 The host cannot transfer its role during a session.
 
-Synchronization uses playback positions, not measured sound output.
-Phones and headphones can add different output delays. Audible synchronization and Bluetooth reliability require testing with physical phones.
-Use headphones to avoid interference between nearby speakers.
+Phones and headphones can add different audio delays.
+Audible synchronization and Bluetooth reliability require testing with physical phones.
 
 ## Content
 
