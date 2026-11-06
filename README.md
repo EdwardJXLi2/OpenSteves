@@ -51,3 +51,34 @@ Set the SDK location in Android Studio or define `ANDROID_HOME` before building.
 ```
 
 The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
+
+## APK builds and signing
+
+GitHub Actions builds debug APKs for pull requests to `main` and `master`.
+Pushes to these branches, `v*` tags, and manual runs also build signed release APKs and publish them to the `latest` GitHub Release.
+
+Non-PR builds require these GitHub repository secrets:
+
+| Secret | Value |
+| --- | --- |
+| `OPENSTEVES_KEYSTORE_BASE64` | Base64-encoded release keystore |
+| `OPENSTEVES_KEYSTORE_PASSWORD` | Keystore password |
+| `OPENSTEVES_KEY_ALIAS` | Signing key alias |
+| `OPENSTEVES_KEY_PASSWORD` | Key password |
+
+Use one stable signing key for this app and keep a secure backup.
+
+Local release builds use `OPENSTEVES_KEYSTORE_FILE`, `OPENSTEVES_KEYSTORE_PASSWORD`, `OPENSTEVES_KEY_ALIAS`, and `OPENSTEVES_KEY_PASSWORD`.
+Set `OPENSTEVES_KEYSTORE_FILE` to the absolute keystore path, then run `./gradlew :app:assembleRelease`.
+Without these variables, local release builds produce an unsigned APK.
+
+## APK Repository publishing
+
+Non-PR builds also upload the signed release APK to the APK Repository and require these GitHub repository secrets:
+
+| Secret | Value |
+| --- | --- |
+| `APK_REPOSITORY_URL` | Server base URL without the public `/repo` path |
+| `APK_REPOSITORY_API_KEY` | API key with upload permission |
+
+Missing secrets cause the APK Repository publish job to fail.
