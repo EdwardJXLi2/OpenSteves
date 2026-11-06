@@ -5,7 +5,7 @@ internal data class SessionDebugSettings(
     val playingDriftThresholdMs: Long = 2_000,
     val requiredDriftSamples: Int = 3,
     val correctionCooldownMs: Long = 10_000,
-    val schedulingLeadMs: Long = 600,
+    val schedulingLeadMs: Long = 0,
     val clockSyncIntervalMs: Long = 2_000,
     val playbackSyncIntervalMs: Long = 2_000,
     val peerTimeoutMs: Long = 12_000,
