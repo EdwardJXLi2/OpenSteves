@@ -24,6 +24,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -38,6 +41,12 @@ import kotlin.math.abs
 class SessionManager private constructor(private val context: Context) {
     private val mutableState = MutableStateFlow(SessionState())
     val state: StateFlow<SessionState> = mutableState.asStateFlow()
+    private val debugPreferences = context.getSharedPreferences("session_debug", Context.MODE_PRIVATE)
+    private val mutableDebugSettings = MutableStateFlow(readDebugSettings())
+    internal val debugSettings: StateFlow<SessionDebugSettings> = mutableDebugSettings.asStateFlow()
+    private var hostSchedulingLeadMs: Long? = null
+    internal val schedulingLeadMs: Long
+        get() = if (state.value.role == "guest") hostSchedulingLeadMs ?: 600L else debugSettings.value.schedulingLeadMs
     private var playback: SessionPlayback? = null
     private var scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var server: BluetoothServerSocket? = null
@@ -51,10 +60,9 @@ class SessionManager private constructor(private val context: Context) {
     private var sequence = 0L
     private var receivedSequence = -1L
     private var clockOffset = 0L
-    private var bestRtt = Long.MAX_VALUE
+    private var selectedClockRttMs = Long.MAX_VALUE
     private var clockSampleAt = 0L
     private var hostGreeting: PlaybackSnapshot? = null
-    private val pendingPings = mutableSetOf<Long>()
     private val mutableDebugEvents = MutableStateFlow<List<SessionDebugEvent>>(emptyList())
     internal val debugEvents: StateFlow<List<SessionDebugEvent>> = mutableDebugEvents.asStateFlow()
     private var debugStartedAt = 0L
@@ -63,12 +71,19 @@ class SessionManager private constructor(private val context: Context) {
     private var sentFrames = 0L
     private var receivedFrames = 0L
     private var lastDriftMs: Long? = null
+    private var automaticSeeks = 0L
     private val driftCorrection = SessionDriftCorrection()
 
     private class Peer(val socket: BluetoothSocket, val address: String, val name: String, val debugId: Int) {
         val outgoing = Channel<ByteArray>(16)
         var ready = false
+        var acceptsPing = false
         var lastReceived = SystemClock.elapsedRealtime()
+        var sentFrames = 0L
+        var receivedFrames = 0L
+        var lastPongAt: Long? = null
+        val pendingPings = mutableSetOf<Long>()
+        val rtt = SessionRttStatistics()
         fun close() {
             outgoing.close()
             runCatching { socket.close() }
@@ -81,18 +96,66 @@ class SessionManager private constructor(private val context: Context) {
             elapsedMs = if (debugStartedAt == 0L) 0 else timestamp - debugStartedAt,
             listening = server != null,
             connecting = connectingSocket != null,
-            peers = peers.values.map { SessionDebugPeer(it.debugId, it.ready, timestamp - it.lastReceived) },
+            peers = peers.values.map {
+                SessionDebugPeer(
+                    id = it.debugId,
+                    ready = it.ready,
+                    lastReceivedMs = timestamp - it.lastReceived,
+                    sentFrames = it.sentFrames,
+                    receivedFrames = it.receivedFrames,
+                    rtt = it.rtt.snapshot(),
+                    pendingPings = it.pendingPings.size,
+                    lastPongAgeMs = it.lastPongAt?.let { at -> timestamp - at },
+                )
+            },
             sentFrames = sentFrames,
             receivedFrames = receivedFrames,
-            rttMs = bestRtt.takeUnless { it == Long.MAX_VALUE },
-            clockOffsetMs = clockOffset.takeIf { bestRtt != Long.MAX_VALUE },
-            clockSampleAgeMs = (timestamp - clockSampleAt).takeIf { bestRtt != Long.MAX_VALUE },
+            clockSampleAgeMs = (timestamp - clockSampleAt).takeIf { selectedClockRttMs != Long.MAX_VALUE },
+            hostSchedulingLeadMs = hostSchedulingLeadMs,
             driftMs = lastDriftMs,
+            automaticSeeks = automaticSeeks,
+            cooldownRemainingMs = driftCorrection.cooldownRemainingMs(timestamp, debugSettings.value),
             pendingCommands = hostSchedule.size + guestSchedule.size,
             sequence = if (state.value.role == "guest") receivedSequence else sequence,
             playback = playback?.snapshot(),
-            playbackReady = playback?.isReady() == true,
+            playbackDiagnostics = playback?.diagnostics(),
         )
+    }
+
+    internal fun updateDebugSettings(settings: SessionDebugSettings) {
+        require(settings.validationError() == null)
+        debugPreferences.edit()
+            .putLong("paused_drift_ms", settings.pausedDriftToleranceMs)
+            .putLong("playing_drift_ms", settings.playingDriftThresholdMs)
+            .putInt("drift_samples", settings.requiredDriftSamples)
+            .putLong("correction_cooldown_ms", settings.correctionCooldownMs)
+            .putLong("scheduling_lead_ms", settings.schedulingLeadMs)
+            .putLong("heartbeat_ms", settings.clockSyncIntervalMs)
+            .putLong("playback_sync_ms", settings.playbackSyncIntervalMs)
+            .putLong("peer_timeout_ms", settings.peerTimeoutMs)
+            .putLong("clock_sample_age_ms", settings.clockSampleMaxAgeMs)
+            .putLong("max_clock_rtt_ms", settings.maxClockRttMs)
+            .apply()
+        mutableDebugSettings.value = settings
+        driftCorrection.resetSamples()
+        debug("SETTINGS", settings.toString())
+    }
+
+    private fun readDebugSettings(): SessionDebugSettings {
+        val defaults = SessionDebugSettings()
+        val clockSyncInterval = debugPreferences.getLong("heartbeat_ms", defaults.clockSyncIntervalMs)
+        return SessionDebugSettings(
+            pausedDriftToleranceMs = debugPreferences.getLong("paused_drift_ms", defaults.pausedDriftToleranceMs),
+            playingDriftThresholdMs = debugPreferences.getLong("playing_drift_ms", defaults.playingDriftThresholdMs),
+            requiredDriftSamples = debugPreferences.getInt("drift_samples", defaults.requiredDriftSamples),
+            correctionCooldownMs = debugPreferences.getLong("correction_cooldown_ms", defaults.correctionCooldownMs),
+            schedulingLeadMs = debugPreferences.getLong("scheduling_lead_ms", defaults.schedulingLeadMs),
+            clockSyncIntervalMs = clockSyncInterval,
+            playbackSyncIntervalMs = debugPreferences.getLong("playback_sync_ms", clockSyncInterval),
+            peerTimeoutMs = debugPreferences.getLong("peer_timeout_ms", defaults.peerTimeoutMs),
+            clockSampleMaxAgeMs = debugPreferences.getLong("clock_sample_age_ms", defaults.clockSampleMaxAgeMs),
+            maxClockRttMs = debugPreferences.getLong("max_clock_rtt_ms", defaults.maxClockRttMs),
+        ).takeIf { it.validationError() == null } ?: defaults
     }
 
     private fun debug(category: String, detail: String) {
@@ -174,6 +237,7 @@ class SessionManager private constructor(private val context: Context) {
         mutableDebugEvents.value = emptyList()
         mutableState.value = SessionState(if (action == SessionService.ACTION_HOST) "host" else "guest", "Starting Bluetooth session…")
         debug("SESSION", "Starting ${state.value.role}; protocol $PROTOCOL_VERSION; RFCOMM $SERVICE_UUID")
+        debug("SETTINGS", debugSettings.value.toString())
         try {
             context.startForegroundService(Intent(context, SessionService::class.java).setAction(action).putExtra("address", address))
         } catch (error: RuntimeException) {
@@ -211,7 +275,7 @@ class SessionManager private constructor(private val context: Context) {
                                         val peer = register(socket)
                                         accepted = true
                                         val greeting = playback?.snapshot() ?: snapshot
-                                        send(peer, frame("hello").put("audio", encode(greeting)))
+                                        send(peer, frame("hello").put("audio", encode(greeting)).put("lead", schedulingLeadMs))
                                         refreshPeers()
                                     } else if (generation == currentGeneration) {
                                         debug("CONNECTION", "Rejected connection: unpaired or duplicate")
@@ -231,7 +295,7 @@ class SessionManager private constructor(private val context: Context) {
                         }
                     }
                 }
-                startHeartbeat()
+                startSynchronization()
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 debug("ERROR", "Opening Bluetooth listener failed: ${error.javaClass.simpleName}")
@@ -259,7 +323,7 @@ class SessionManager private constructor(private val context: Context) {
                 connectingSocket = null
                 register(socket)
                 mutableState.value = state.value.copy(status = "Checking tour and synchronizing clocks…")
-                startHeartbeat()
+                startSynchronization()
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 if (generation == currentGeneration) {
@@ -342,11 +406,12 @@ class SessionManager private constructor(private val context: Context) {
             return
         }
         val now = now()
-        val at = now + SessionTiming.LEAD_MS
         // Earlier commands must execute at their original deadlines for this projection to remain valid.
-        val previous = hostSchedule.values.lastOrNull()
+        val queued = hostSchedule.values.lastOrNull()
+        val previous = queued
             ?: playback?.snapshot()?.let { it to now }
             ?: return
+        val at = maxOf(now + schedulingLeadMs, queued?.second?.plus(1) ?: now)
         val target = SessionTiming.scheduled(previous.first, previous.second, command, at)
         val seek = command.action != "speed"
         val seq = broadcastState(target, at, force = true, seek = seek)
@@ -355,7 +420,7 @@ class SessionManager private constructor(private val context: Context) {
         scope.launch {
             delay((at - now()).coerceAtLeast(0))
             playback?.apply(target.copy(positionMs = SessionTiming.position(target, at, now())), seek = seek)
-            debug("APPLY", "Host sequence=$seq, lateness=${now() - at} ms")
+            debug("APPLY", "Host sequence=$seq, lateness=${(now() - at).coerceAtLeast(0)} ms")
             hostSchedule.remove(seq)
         }
     }
@@ -376,6 +441,7 @@ class SessionManager private constructor(private val context: Context) {
                     withContext(Dispatchers.Main.immediate) {
                         if (generation == currentGeneration) {
                             sentFrames++
+                            peer.sentFrames++
                             debug("TX", "Peer ${peer.debugId}: ${bytes.toString(Charsets.UTF_8)}")
                         }
                     }
@@ -399,6 +465,7 @@ class SessionManager private constructor(private val context: Context) {
                     withContext(Dispatchers.Main.immediate) {
                         if (generation == currentGeneration && peers[address] === peer) {
                             receivedFrames++
+                            peer.receivedFrames++
                             debug("RX", "Peer ${peer.debugId}: $message")
                             receive(peer, message)
                         }
@@ -428,14 +495,23 @@ class SessionManager private constructor(private val context: Context) {
         require(message.getInt("version") == PROTOCOL_VERSION)
         peer.lastReceived = now()
         val type = message.getString("type")
+        if (type == "ping") {
+            send(peer, frame("pong").put("sent", message.getLong("sent")).put("host", now()))
+            return
+        }
+        if (type == "pong") {
+            receivePong(peer, message)
+            return
+        }
         if (state.value.role == "host") {
             when (type) {
-                "ping" -> send(peer, frame("pong").put("sent", message.getLong("sent")).put("host", now()))
                 "ready" -> {
                     peer.ready = true
+                    peer.acceptsPing = message.optBoolean("acceptsPing")
                     debug("CONNECTION", "Peer ${peer.debugId} ready")
-                    val at = now() + SessionTiming.LEAD_MS
-                    val target = hostSchedule.values.lastOrNull()?.let { it.first.copy(positionMs = SessionTiming.position(it.first, it.second, at)) }
+                    val queued = hostSchedule.values.lastOrNull()
+                    val at = maxOf(now() + schedulingLeadMs, queued?.second ?: 0)
+                    val target = queued?.let { it.first.copy(positionMs = SessionTiming.position(it.first, it.second, at)) }
                         ?: playback?.snapshot()?.let { it.copy(positionMs = SessionTiming.position(it, now(), at)) }
                     if (target != null) sendState(peer, target, at, ++sequence, force = true)
                     refreshPeers()
@@ -452,6 +528,7 @@ class SessionManager private constructor(private val context: Context) {
                 "removed" -> fail("The host removed you from the session. Your playback is paused.")
                 "hello" -> {
                     require(hostGreeting == null)
+                    readHostSchedulingLead(message)
                     val audio = decode(message.getJSONObject("audio"))
                     if (playback?.hasAudio(audio.tourId, audio.hash) != true) {
                         requireTour(audio.tourId)
@@ -466,12 +543,12 @@ class SessionManager private constructor(private val context: Context) {
                         }
                         val deadline = now() + 10_000
                         while (now() < deadline) {
-                            if (bestRtt != Long.MAX_VALUE && playback?.isReady() == true &&
+                            if (selectedClockRttMs != Long.MAX_VALUE && playback?.isReady() == true &&
                                 playback?.snapshot()?.tourId == audio.tourId
                             ) {
                                 peer.ready = true
                                 debug("CONNECTION", "Host connection ready; audio verified and clock synchronized")
-                                send(peer, frame("ready"))
+                                send(peer, frame("ready").put("acceptsPing", true))
                                 refreshPeers()
                                 return@launch
                             }
@@ -480,24 +557,40 @@ class SessionManager private constructor(private val context: Context) {
                         fail("Could not sync this tour. Start it again, then rejoin the session.")
                     }
                 }
-                "pong" -> {
-                    val sent = message.getLong("sent")
-                    require(pendingPings.remove(sent))
-                    val received = now()
-                    val rtt = received - sent
-                    val hostAt = message.getLong("host")
-                    require(hostAt in 0..Long.MAX_VALUE / 4)
-                    if (rtt in 0..5_000 && (rtt < bestRtt || received - clockSampleAt > 30_000)) {
-                        bestRtt = rtt
-                        clockSampleAt = received
-                        clockOffset = SessionTiming.clockOffset(sent, received, hostAt)
-                        debug("CLOCK", "RTT=$rtt ms, host clock offset=$clockOffset ms")
-                    }
-                }
                 "state" -> if (peer.ready) receiveState(message)
                 else -> throw IOException("Unexpected session frame")
             }
         }
+    }
+
+    private fun receivePong(peer: Peer, message: JSONObject) {
+        val sent = message.getLong("sent")
+        if (!peer.pendingPings.remove(sent)) {
+            debug("PING", "Peer ${peer.debugId}: ignored expired or duplicate pong")
+            return
+        }
+        val received = now()
+        val rtt = received - sent
+        val remoteAt = message.getLong("host")
+        require(rtt >= 0 && remoteAt in 0..Long.MAX_VALUE / 4)
+        peer.rtt.record(rtt)
+        peer.lastPongAt = received
+        debug("PING", "Peer ${peer.debugId}: RTT=$rtt ms")
+        val settings = debugSettings.value
+        if (state.value.role == "guest" && rtt <= settings.maxClockRttMs &&
+            (rtt < selectedClockRttMs || received - clockSampleAt > settings.clockSampleMaxAgeMs)
+        ) {
+            selectedClockRttMs = rtt
+            clockSampleAt = received
+            clockOffset = SessionTiming.clockOffset(sent, received, remoteAt)
+            debug("CLOCK", "RTT=$rtt ms, host clock offset=$clockOffset ms")
+        }
+    }
+
+    private fun readHostSchedulingLead(message: JSONObject) {
+        val lead = message.optLong("lead", 600L)
+        require(lead in 0..10_000)
+        hostSchedulingLeadMs = lead
     }
 
     private fun receiveState(message: JSONObject) {
@@ -506,6 +599,7 @@ class SessionManager private constructor(private val context: Context) {
             debug("SYNC", "Ignored stale sequence=$seq; last=$receivedSequence")
             return
         }
+        readHostSchedulingLead(message)
         val target = decode(message.getJSONObject("audio"))
         if (playback?.hasAudio(target.tourId, target.hash) != true) {
             requireTour(target.tourId)
@@ -518,9 +612,9 @@ class SessionManager private constructor(private val context: Context) {
         receivedSequence = seq
         val force = message.optBoolean("force")
         val requestedSeek = message.optBoolean("seek", true)
-        correction?.cancel()
-        if (!force && guestSchedule.isNotEmpty()) {
-            debug("SYNC", "Skipped periodic state while commands are pending")
+        if (force) correction?.cancel()
+        if (!force && (guestSchedule.isNotEmpty() || correction?.isActive == true)) {
+            debug("SYNC", "Skipped periodic state while an earlier update is pending")
             return
         }
         if (force) {
@@ -538,33 +632,47 @@ class SessionManager private constructor(private val context: Context) {
             val seek = when {
                 current == null || current.tourId != target.tourId || current.playing != target.playing -> true
                 force -> requestedSeek
-                else -> driftCorrection.shouldCorrect(current.positionMs - position, target.playing, now())
+                else -> driftCorrection.shouldCorrect(current.positionMs - position, target.playing, now(), debugSettings.value)
             }
             if (force || seek || current?.speed != target.speed) {
                 playback?.apply(target.copy(positionMs = position), seek = seek)
-                if (seek) driftCorrection.positionApplied(now())
-                debug("APPLY", "Guest sequence=$seq, forced=$force, seek=$seek, drift=$lastDriftMs ms, lateness=${now() - at} ms")
+                if (seek) {
+                    driftCorrection.positionApplied(now())
+                    if (!force) automaticSeeks++
+                }
+                debug("APPLY", "Guest sequence=$seq, forced=$force, seek=$seek, drift=$lastDriftMs ms, lateness=${(now() - at).coerceAtLeast(0)} ms")
             }
             guestSchedule.remove(seq)
         }
         if (force) guestApplyTail = apply else correction = apply
     }
 
-    private fun startHeartbeat() {
+    private fun startSynchronization() {
         scope.launch {
-            while (isActive) {
-                delay(2_000)
-                peers.toMap().forEach { (address, peer) ->
-                    if (now() - peer.lastReceived > 12_000) disconnected(address, peer, generation, "No frames received for 12 s")
-                }
-                if (state.value.role == "host" && hostSchedule.isEmpty()) {
-                    playback?.snapshot()?.let { snapshot ->
-                        val now = now()
-                        val at = now + SessionTiming.LEAD_MS
-                        broadcastState(snapshot.copy(positionMs = SessionTiming.position(snapshot, now, at)), at, force = false)
+            debugSettings.map { it.clockSyncIntervalMs }.distinctUntilChanged().collectLatest { interval ->
+                while (isActive) {
+                    delay(interval)
+                    peers.toMap().forEach { (address, peer) ->
+                        if (now() - peer.lastReceived > debugSettings.value.peerTimeoutMs) {
+                            disconnected(address, peer, generation, "No frames received for ${debugSettings.value.peerTimeoutMs} ms")
+                        } else if (state.value.role == "host" && peer.ready && peer.acceptsPing) ping(peer)
                     }
-                } else if (state.value.role == "guest") {
-                    peers.values.firstOrNull()?.let { ping(it) }
+                    if (state.value.role == "guest") peers.values.firstOrNull()?.let { ping(it) }
+                }
+            }
+        }
+        if (state.value.role != "host") return
+        scope.launch {
+            debugSettings.map { it.playbackSyncIntervalMs }.distinctUntilChanged().collectLatest { interval ->
+                while (isActive) {
+                    delay(interval)
+                    if (hostSchedule.isEmpty()) {
+                        playback?.snapshot()?.let { snapshot ->
+                            val now = now()
+                            val at = now + schedulingLeadMs
+                            broadcastState(snapshot.copy(positionMs = SessionTiming.position(snapshot, now, at)), at, force = false)
+                        }
+                    }
                 }
             }
         }
@@ -572,8 +680,8 @@ class SessionManager private constructor(private val context: Context) {
 
     private fun ping(peer: Peer) {
         val timestamp = now()
-        pendingPings.removeAll { timestamp - it > 12_000 }
-        if (pendingPings.add(timestamp)) send(peer, frame("ping").put("sent", timestamp))
+        peer.pendingPings.removeAll { timestamp - it > debugSettings.value.peerTimeoutMs }
+        if (peer.pendingPings.add(timestamp)) send(peer, frame("ping").put("sent", timestamp))
     }
 
     private fun broadcastState(snapshot: PlaybackSnapshot, at: Long, force: Boolean, seek: Boolean = true): Long {
@@ -583,7 +691,8 @@ class SessionManager private constructor(private val context: Context) {
     }
 
     private fun sendState(peer: Peer, snapshot: PlaybackSnapshot, at: Long, seq: Long, force: Boolean, seek: Boolean = true) {
-        send(peer, frame("state").put("audio", encode(snapshot)).put("at", at).put("sequence", seq).put("force", force).put("seek", seek))
+        send(peer, frame("state").put("audio", encode(snapshot)).put("at", at).put("sequence", seq)
+            .put("force", force).put("seek", seek).put("lead", schedulingLeadMs))
     }
 
     private fun send(peer: Peer, message: JSONObject) {
@@ -619,12 +728,13 @@ class SessionManager private constructor(private val context: Context) {
         guestSchedule.clear()
         receivedSequence = -1
         sequence = 0
-        bestRtt = Long.MAX_VALUE
+        selectedClockRttMs = Long.MAX_VALUE
         clockSampleAt = 0
         clockOffset = 0
         hostGreeting = null
-        pendingPings.clear()
         lastDriftMs = null
+        automaticSeeks = 0
+        hostSchedulingLeadMs = null
         driftCorrection.reset()
     }
 

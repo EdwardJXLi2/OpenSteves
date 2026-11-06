@@ -34,8 +34,6 @@ import dev.hydranet.opensteves.session.SessionManager
 import dev.hydranet.opensteves.ui.theme.AppThemeMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -56,9 +54,6 @@ fun TourApp(
     val player by playback.state.collectAsState()
     val session = remember { SessionManager.get(context) }
     val group by session.state.collectAsState()
-    val hasSessionDebugEvents by remember(session) {
-        session.debugEvents.map { it.isNotEmpty() }.distinctUntilChanged()
-    }.collectAsState(false)
     var screen by rememberSaveable { mutableIntStateOf(0) }
     var selectedId by rememberSaveable { mutableStateOf<Int?>(null) }
     var playerTourId by rememberSaveable { mutableStateOf<Int?>(null) }
@@ -220,7 +215,7 @@ fun TourApp(
                                 if (startingSession) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
                                 else Icon(Icons.Outlined.Group, if (group.role != "none") "Go to session" else "Share this tour")
                             }
-                        } else if (selected == null && screen == 2 && !showingSessionDebug && (group.role != "none" || hasSessionDebugEvents)) {
+                        } else if (selected == null && screen == 2 && !showingSessionDebug) {
                             IconButton(onClick = { showingSessionDebug = true }) {
                                 Icon(Icons.Outlined.BugReport, "Session debug")
                             }

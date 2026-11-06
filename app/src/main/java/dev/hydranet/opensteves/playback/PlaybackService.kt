@@ -23,10 +23,10 @@ import com.google.common.util.concurrent.ListenableFuture
 import dev.hydranet.opensteves.MainActivity
 import dev.hydranet.opensteves.data.TourRepository
 import dev.hydranet.opensteves.session.PlaybackCommand
+import dev.hydranet.opensteves.session.PlaybackDiagnostics
 import dev.hydranet.opensteves.session.PlaybackSnapshot
 import dev.hydranet.opensteves.session.SessionManager
 import dev.hydranet.opensteves.session.SessionPlayback
-import dev.hydranet.opensteves.session.SessionTiming
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -145,10 +145,21 @@ class PlaybackService : MediaSessionService(), SessionPlayback {
 
     override fun isReady(): Boolean = player.playbackState == Player.STATE_READY
 
+    override fun diagnostics(): PlaybackDiagnostics = PlaybackDiagnostics(
+        state = when (player.playbackState) {
+            Player.STATE_IDLE -> "idle"
+            Player.STATE_BUFFERING -> "buffering"
+            Player.STATE_READY -> "ready"
+            Player.STATE_ENDED -> "ended"
+            else -> "unknown"
+        },
+        actuallyPlaying = player.isPlaying,
+    )
+
     private fun interruptGroup() {
         if (groups.state.value.role != "none") {
             interrupted = true
-            interruptionDeadline = SystemClock.elapsedRealtime() + SessionTiming.LEAD_MS
+            interruptionDeadline = SystemClock.elapsedRealtime() + groups.schedulingLeadMs
             player.pause()
             groups.request(PlaybackCommand("pause"))
         }

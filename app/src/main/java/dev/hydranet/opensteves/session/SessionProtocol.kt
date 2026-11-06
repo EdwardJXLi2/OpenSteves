@@ -22,14 +22,16 @@ data class PlaybackSnapshot(
 
 interface SessionPlayback {
     fun snapshot(): PlaybackSnapshot?
+    fun diagnostics(): PlaybackDiagnostics
     fun isReady(): Boolean
     fun hasAudio(tourId: Int, hash: String): Boolean
     fun apply(snapshot: PlaybackSnapshot, seek: Boolean = true)
     fun pause()
 }
 
+data class PlaybackDiagnostics(val state: String, val actuallyPlaying: Boolean)
+
 internal object SessionTiming {
-    const val LEAD_MS = 600L
     const val MAX_POSITION_MS = 86_400_000L
 
     fun position(snapshot: PlaybackSnapshot, at: Long, now: Long): Long =

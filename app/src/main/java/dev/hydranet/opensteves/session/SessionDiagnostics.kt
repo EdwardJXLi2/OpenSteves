@@ -11,6 +11,11 @@ internal data class SessionDebugPeer(
     val id: Int,
     val ready: Boolean,
     val lastReceivedMs: Long,
+    val sentFrames: Long,
+    val receivedFrames: Long,
+    val rtt: SessionRttSnapshot,
+    val pendingPings: Int,
+    val lastPongAgeMs: Long?,
 )
 
 internal data class SessionDiagnostics(
@@ -20,12 +25,13 @@ internal data class SessionDiagnostics(
     val peers: List<SessionDebugPeer>,
     val sentFrames: Long,
     val receivedFrames: Long,
-    val rttMs: Long?,
-    val clockOffsetMs: Long?,
     val clockSampleAgeMs: Long?,
+    val hostSchedulingLeadMs: Long?,
     val driftMs: Long?,
+    val automaticSeeks: Long,
+    val cooldownRemainingMs: Long,
     val pendingCommands: Int,
     val sequence: Long,
     val playback: PlaybackSnapshot?,
-    val playbackReady: Boolean,
+    val playbackDiagnostics: PlaybackDiagnostics?,
 )
