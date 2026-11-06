@@ -127,12 +127,19 @@ class PlaybackService : MediaSessionService(), SessionPlayback {
     override fun hasAudio(tourId: Int, hash: String): Boolean =
         repository.installed.value[tourId]?.audioHash == hash && repository.audioFile(tourId) != null
 
-    override fun apply(snapshot: PlaybackSnapshot) {
+    override fun apply(snapshot: PlaybackSnapshot, seek: Boolean) {
         if (!hasAudio(snapshot.tourId, snapshot.hash)) return
-        if (!snapshot.playing && SystemClock.elapsedRealtime() >= interruptionDeadline) interrupted = false
-        if (load(snapshot.tourId, snapshot.positionMs)) {
-            player.setPlaybackSpeed(snapshot.speed)
-            player.playWhenReady = snapshot.playing && !interrupted
+        if (!snapshot.playing) {
+            if (SystemClock.elapsedRealtime() >= interruptionDeadline) interrupted = false
+            if (player.playWhenReady) player.pause()
+        }
+        if ((seek || player.currentMediaItem?.mediaId != snapshot.tourId.toString()) &&
+            !load(snapshot.tourId, snapshot.positionMs)
+        ) return
+        if (player.playbackParameters.speed != snapshot.speed) player.setPlaybackSpeed(snapshot.speed)
+        val playWhenReady = snapshot.playing && !interrupted
+        if (player.playWhenReady != playWhenReady) {
+            player.playWhenReady = playWhenReady
         }
     }
 

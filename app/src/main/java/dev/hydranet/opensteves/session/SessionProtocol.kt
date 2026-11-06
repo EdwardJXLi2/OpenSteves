@@ -24,7 +24,7 @@ interface SessionPlayback {
     fun snapshot(): PlaybackSnapshot?
     fun isReady(): Boolean
     fun hasAudio(tourId: Int, hash: String): Boolean
-    fun apply(snapshot: PlaybackSnapshot)
+    fun apply(snapshot: PlaybackSnapshot, seek: Boolean = true)
     fun pause()
 }
 

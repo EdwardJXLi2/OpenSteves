@@ -63,6 +63,7 @@ class SessionManager private constructor(private val context: Context) {
     private var sentFrames = 0L
     private var receivedFrames = 0L
     private var lastDriftMs: Long? = null
+    private val driftCorrection = SessionDriftCorrection()
 
     private class Peer(val socket: BluetoothSocket, val address: String, val name: String, val debugId: Int) {
         val outgoing = Channel<ByteArray>(16)
@@ -347,12 +348,13 @@ class SessionManager private constructor(private val context: Context) {
             ?: playback?.snapshot()?.let { it to now }
             ?: return
         val target = SessionTiming.scheduled(previous.first, previous.second, command, at)
-        val seq = broadcastState(target, at, force = true)
+        val seek = command.action != "speed"
+        val seq = broadcastState(target, at, force = true, seek = seek)
         hostSchedule[seq] = target to at
         debug("SCHEDULE", "${command.action}: sequence=$seq, lead=${at - now()} ms")
         scope.launch {
             delay((at - now()).coerceAtLeast(0))
-            playback?.apply(target.copy(positionMs = SessionTiming.position(target, at, now())))
+            playback?.apply(target.copy(positionMs = SessionTiming.position(target, at, now())), seek = seek)
             debug("APPLY", "Host sequence=$seq, lateness=${now() - at} ms")
             hostSchedule.remove(seq)
         }
@@ -515,6 +517,7 @@ class SessionManager private constructor(private val context: Context) {
         require(abs(at - now()) < 60_000)
         receivedSequence = seq
         val force = message.optBoolean("force")
+        val requestedSeek = message.optBoolean("seek", true)
         correction?.cancel()
         if (!force && guestSchedule.isNotEmpty()) {
             debug("SYNC", "Skipped periodic state while commands are pending")
@@ -532,11 +535,15 @@ class SessionManager private constructor(private val context: Context) {
             val position = SessionTiming.position(target, at, now())
             val current = playback?.snapshot()
             lastDriftMs = current?.takeIf { it.tourId == target.tourId }?.let { it.positionMs - position }
-            if (force || current == null || current.tourId != target.tourId || current.playing != target.playing ||
-                current.speed != target.speed || abs(current.positionMs - position) > 90
-            ) {
-                playback?.apply(target.copy(positionMs = position))
-                debug("APPLY", "Guest sequence=$seq, forced=$force, drift=$lastDriftMs ms, lateness=${now() - at} ms")
+            val seek = when {
+                current == null || current.tourId != target.tourId || current.playing != target.playing -> true
+                force -> requestedSeek
+                else -> driftCorrection.shouldCorrect(current.positionMs - position, target.playing, now())
+            }
+            if (force || seek || current?.speed != target.speed) {
+                playback?.apply(target.copy(positionMs = position), seek = seek)
+                if (seek) driftCorrection.positionApplied(now())
+                debug("APPLY", "Guest sequence=$seq, forced=$force, seek=$seek, drift=$lastDriftMs ms, lateness=${now() - at} ms")
             }
             guestSchedule.remove(seq)
         }
@@ -569,14 +576,14 @@ class SessionManager private constructor(private val context: Context) {
         if (pendingPings.add(timestamp)) send(peer, frame("ping").put("sent", timestamp))
     }
 
-    private fun broadcastState(snapshot: PlaybackSnapshot, at: Long, force: Boolean): Long {
+    private fun broadcastState(snapshot: PlaybackSnapshot, at: Long, force: Boolean, seek: Boolean = true): Long {
         val seq = ++sequence
-        peers.values.filter { it.ready }.forEach { sendState(it, snapshot, at, seq, force) }
+        peers.values.filter { it.ready }.forEach { sendState(it, snapshot, at, seq, force, seek) }
         return seq
     }
 
-    private fun sendState(peer: Peer, snapshot: PlaybackSnapshot, at: Long, seq: Long, force: Boolean) {
-        send(peer, frame("state").put("audio", encode(snapshot)).put("at", at).put("sequence", seq).put("force", force))
+    private fun sendState(peer: Peer, snapshot: PlaybackSnapshot, at: Long, seq: Long, force: Boolean, seek: Boolean = true) {
+        send(peer, frame("state").put("audio", encode(snapshot)).put("at", at).put("sequence", seq).put("force", force).put("seek", seek))
     }
 
     private fun send(peer: Peer, message: JSONObject) {
@@ -618,6 +625,7 @@ class SessionManager private constructor(private val context: Context) {
         hostGreeting = null
         pendingPings.clear()
         lastDriftMs = null
+        driftCorrection.reset()
     }
 
     private fun adapter(): BluetoothAdapter? = context.getSystemService(BluetoothManager::class.java)?.adapter
