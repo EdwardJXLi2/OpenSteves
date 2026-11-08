@@ -9,7 +9,7 @@ Requires Android 8.0 (API 26) or later.
 
 ## Offline tours
 
-Internet access is required to load the catalog and download tours from the Rick Steves Audio Europe servers.
+Internet access is required to load the catalog and download tours directly from the Rick Steves Audio Europe servers.
 Downloaded tours, maps, and transcripts remain available offline.
 
 Stop the current tour before deleting or updating its download.
@@ -21,12 +21,14 @@ Walking tour transcripts are not timed captions.
 Listen to the same tour on multiple phones through a shared Bluetooth session.
 Each phone plays its own downloaded audio, so the session requires no Wi-Fi or mobile data.
 
-1. Download the same tour revision on every phone before leaving internet coverage.
+1. Download the same tour revision on every phone. Local downloads are recommended.
 2. Pair each guest phone with the host through Android Bluetooth settings.
 3. Start the downloaded tour on the host, then select **Start a session** in **Together**.
 4. On each guest, open **Together**, select **Show paired phones**, then select the host.
 
 Everyone can control playback.
+If a guest needs the tour, select **Download from Host** to copy it over Bluetooth and join automatically.
+The copy includes audio, maps, and transcripts. The app verifies the audio before joining.
 Keep Bluetooth enabled and the phones within range.
 Leaving or losing the host pauses guest playback. Rejoin manually after restoring the connection.
 The host cannot transfer its role during a session.

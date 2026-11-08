@@ -6,6 +6,10 @@ data class SessionState(
     val peers: List<SessionPeer> = emptyList(),
     val error: String? = null,
     val requiredTourId: Int? = null,
+    val hostDownloadAvailable: Boolean = false,
+    val downloadingFromHost: Boolean = false,
+    val hostDownloadProgress: Int? = null,
+    val hostDownloadError: String? = null,
 )
 
 data class SessionPeer(val address: String, val name: String)

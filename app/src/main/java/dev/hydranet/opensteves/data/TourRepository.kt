@@ -242,37 +242,9 @@ class TourRepository private constructor(private val context: Context) {
         initialized.await()
         lock(tour.id).withLock {
             val partial = File(root, "${tour.id}-${tour.version}.partial")
-            val parent = File(root, tour.id.toString()).apply { mkdirs() }
-            val stage = File(parent, "bundle-${UUID.randomUUID()}").apply { mkdirs() }
-            var published = false
             try {
                 downloadArchive(tour, partial, onProgress)
-                BundleArchive.extract(tour, partial, stage)
-                val audio = File(stage, "${tour.baseFileName}.mp3")
-                require(audio.isFile && audio.length() > 0) { "The bundle has no audio file" }
-                val hash = audio.inputStream().use { input ->
-                    val digest = MessageDigest.getInstance("SHA-256")
-                    val buffer = ByteArray(64 * 1024)
-                    while (true) {
-                        currentCoroutineContext().ensureActive()
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        digest.update(buffer, 0, count)
-                    }
-                    digest.digest().joinToString("") { "%02x".format(it) }
-                }
-                val old = directory(tour.id)
-                if (_installed.value[tour.id]?.audioHash == hash) {
-                    old?.let { File(it, "subtitles.vtt") }?.takeIf(File::isFile)?.copyTo(File(stage, "subtitles.vtt"))
-                }
-                val size = stage.walkTopDown().filter(File::isFile).sumOf(File::length)
-                val metadata = JSONObject().put("tour", tour.toJson()).put("directory", stage.name)
-                    .put("sizeBytes", size).put("audioHash", hash)
-                currentCoroutineContext().ensureActive()
-                atomicWrite(File(parent, "install.json"), metadata.toString())
-                _installed.update { it + (tour.id to InstalledTour(tour, size, hash, stage.name)) }
-                published = true
-                old?.deleteRecursively()
+                installArchive(tour, partial)
                 deletePartialFiles(tour.id)
                 onProgress(100)
             } catch (error: java.util.zip.ZipException) {
@@ -281,10 +253,85 @@ class TourRepository private constructor(private val context: Context) {
             } catch (error: IllegalArgumentException) {
                 partial.delete()
                 throw error
-            } finally {
-                if (!published) stage.deleteRecursively()
             }
         }
+    }
+
+    internal suspend fun exportForSharing(tourId: Int, expectedHash: String): SharedTourArchive {
+        var archive: File? = null
+        try {
+            return withContext(Dispatchers.IO) {
+                initialized.await()
+                lock(tourId).withLock {
+                    val installed = _installed.value[tourId] ?: throw IOException("This tour is no longer downloaded")
+                    require(installed.audioHash == expectedHash) { "The host's audio changed. Rejoin the session." }
+                    val folder = directory(tourId) ?: throw IOException("The downloaded tour is missing")
+                    val audio = File(folder, "${installed.tour.baseFileName}.mp3")
+                    require(audio.isFile && audio.length() > 0 && audioHash(audio) == expectedHash) {
+                        "The host's audio changed. Download the tour again."
+                    }
+                    val file = File.createTempFile("shared-tour-$tourId-", ".zip", context.cacheDir)
+                    archive = file
+                    SharedTourArchiveWriter.write(installed.tour, folder, file)
+                    SharedTourArchive(installed.tour, installed.audioHash, file)
+                }
+            }
+        } catch (error: Throwable) {
+            archive?.delete()
+            throw error
+        }
+    }
+
+    internal suspend fun installSharedTour(tour: Tour, archive: File, expectedHash: String) = withContext(Dispatchers.IO) {
+        initialized.await()
+        val validatedTour = Tour.fromJson(tour.toJson())
+        require(expectedHash.matches(Regex("[a-f0-9]{64}"))) { "Invalid shared audio hash" }
+        require(archive.isFile && archive.length() in 1..Tour.MAX_BUNDLE_BYTES) { "Invalid shared tour archive" }
+        WorkManager.getInstance(context).cancelUniqueWork(workName(validatedTour.id)).result.get()
+        lock(validatedTour.id).withLock {
+            installArchive(validatedTour, archive, expectedHash)
+            deletePartialFiles(validatedTour.id)
+        }
+    }
+
+    private suspend fun installArchive(tour: Tour, archive: File, expectedHash: String? = null) {
+        val parent = File(root, tour.id.toString()).apply { mkdirs() }
+        val stage = File(parent, "bundle-${UUID.randomUUID()}").apply { mkdirs() }
+        var published = false
+        try {
+            BundleArchive.extract(tour, archive, stage)
+            val audio = File(stage, "${tour.baseFileName}.mp3")
+            require(audio.isFile && audio.length() > 0) { "The bundle has no audio file" }
+            val hash = audioHash(audio)
+            require(expectedHash == null || hash == expectedHash) { "The shared audio does not match the host's audio" }
+            val old = directory(tour.id)
+            if (_installed.value[tour.id]?.audioHash == hash) {
+                old?.let { File(it, "subtitles.vtt") }?.takeIf(File::isFile)
+                    ?.copyTo(File(stage, "subtitles.vtt"), overwrite = true)
+            }
+            val size = stage.walkTopDown().filter(File::isFile).sumOf(File::length)
+            val metadata = JSONObject().put("tour", tour.toJson()).put("directory", stage.name)
+                .put("sizeBytes", size).put("audioHash", hash)
+            currentCoroutineContext().ensureActive()
+            atomicWrite(File(parent, "install.json"), metadata.toString())
+            _installed.update { it + (tour.id to InstalledTour(tour, size, hash, stage.name)) }
+            published = true
+            old?.deleteRecursively()
+        } finally {
+            if (!published) stage.deleteRecursively()
+        }
+    }
+
+    private suspend fun audioHash(audio: File): String = audio.inputStream().use { input ->
+        val digest = MessageDigest.getInstance("SHA-256")
+        val buffer = ByteArray(64 * 1024)
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            val count = input.read(buffer)
+            if (count < 0) break
+            digest.update(buffer, 0, count)
+        }
+        digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     private suspend fun downloadArchive(tour: Tour, partial: File, onProgress: suspend (Int) -> Unit) {

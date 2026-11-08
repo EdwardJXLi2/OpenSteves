@@ -74,7 +74,7 @@ class SessionService : Service() {
             }
             when (intent?.action) {
                 ACTION_HOST -> manager.beginHost()
-                ACTION_JOIN -> manager.beginJoin(intent.getStringExtra("address").orEmpty())
+                ACTION_JOIN -> manager.beginJoin(intent.getStringExtra("address").orEmpty(), intent.getBooleanExtra("downloadFromHost", false))
                 else -> manager.leave()
             }
         } catch (_: SecurityException) {

@@ -24,6 +24,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -255,57 +256,92 @@ fun TourApp(
     }
     group.requiredTourId?.let { tourId ->
         val tour = tours.find { it.id == tourId } ?: installed[tourId]?.tour
+        val downloading = preparingSessionDownload || group.downloadingFromHost
+        fun beginDownload(fromHost: Boolean) {
+            if (preparingSessionDownload || session.state.value.downloadingFromHost) return
+            preparingSessionDownload = true
+            sessionDownloadError = null
+            scope.launch {
+                try {
+                    val available = if (fromHost) null else {
+                        repository.tours.value.find { it.id == tourId } ?: run {
+                            repository.refreshCatalog()
+                            repository.tours.value.find { it.id == tourId }
+                        }
+                    }
+                    if (!fromHost && available == null) {
+                        sessionDownloadError = "Could not find this tour. Connect to the internet and try again."
+                        return@launch
+                    }
+                    if (session.state.value.requiredTourId != tourId) return@launch
+                    if (playback.state.value.tourId == tourId) {
+                        playback.stop()
+                        if (withTimeoutOrNull(5_000) { playback.state.first { it.tourId != tourId } } == null) {
+                            sessionDownloadError = "Stop this tour in Playing, then try the download again."
+                            return@launch
+                        }
+                    }
+                    if (session.state.value.requiredTourId != tourId) return@launch
+                    if (fromHost) {
+                        notificationPermission()
+                        session.downloadRequiredTourFromHost()
+                        navigate(2)
+                    } else {
+                        download(checkNotNull(available))
+                        session.dismissRequiredTour()
+                        navigate(0)
+                        selectedId = tourId
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    sessionDownloadError = if (fromHost) "Could not start the Bluetooth download. Try again."
+                        else "Could not start the download. Check your connection and try again."
+                } finally {
+                    preparingSessionDownload = false
+                }
+            }
+        }
         AlertDialog(
             onDismissRequest = { if (!preparingSessionDownload) session.dismissRequiredTour() },
             title = { Text("Download tour?") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(when {
-                        tour == null -> "You need the host’s tour on this phone to join the session. Download it now, then join again."
-                        installed.containsKey(tourId) -> "Your copy of “${tour.title}” differs from the host’s. Download it again, then rejoin the session."
-                        else -> "You need “${tour.title}” on this phone to join the session. Download it now, then join again."
+                        tour == null -> "You need the host’s tour on this phone to join."
+                        installed.containsKey(tourId) -> "Your copy of “${tour.title}” differs from the host’s."
+                        else -> "Download “${tour.title}” to join."
                     })
-                    if (preparingSessionDownload) LinearProgressIndicator(Modifier.fillMaxWidth())
-                    sessionDownloadError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    if (downloading) {
+                        val progress = group.hostDownloadProgress
+                        if (progress != null && group.downloadingFromHost) {
+                            LinearProgressIndicator(progress = { progress / 100f }, modifier = Modifier.fillMaxWidth())
+                            Text(if (progress == 100) "Verifying download…" else "Downloading from host… $progress%")
+                        } else {
+                            LinearProgressIndicator(Modifier.fillMaxWidth())
+                            if (group.downloadingFromHost) Text("Preparing Bluetooth download…")
+                        }
+                    } else if (!group.hostDownloadAvailable) {
+                        Text("Host download is unavailable for this session.")
+                    }
+                    (sessionDownloadError ?: group.hostDownloadError)?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 }
             },
             confirmButton = {
-                TextButton(shape = MaterialTheme.shapes.small, enabled = !preparingSessionDownload, onClick = {
-                    scope.launch {
-                        preparingSessionDownload = true
-                        sessionDownloadError = null
-                        try {
-                            val available = repository.tours.value.find { it.id == tourId } ?: run {
-                                repository.refreshCatalog()
-                                repository.tours.value.find { it.id == tourId }
-                            }
-                            if (available == null) {
-                                sessionDownloadError = "Could not find this tour. Connect to the internet and try again, or ask the host to update their download."
-                                return@launch
-                            }
-                            if (playback.state.value.tourId == tourId) {
-                                playback.stop()
-                                if (withTimeoutOrNull(5_000) { playback.state.first { it.tourId != tourId } } == null) {
-                                    sessionDownloadError = "Stop this tour in Playing, then try the download again."
-                                    return@launch
-                                }
-                            }
-                            download(available)
-                            session.dismissRequiredTour()
-                            navigate(0)
-                            selectedId = tourId
-                        } catch (cancelled: CancellationException) {
-                            throw cancelled
-                        } catch (_: Exception) {
-                            sessionDownloadError = "Could not start the download. Check your connection and try again."
-                        } finally {
-                            preparingSessionDownload = false
-                        }
-                    }
-                }) { Text(if (preparingSessionDownload) "Preparing…" else "Download") }
-            },
-            dismissButton = {
-                TextButton(shape = MaterialTheme.shapes.small, enabled = !preparingSessionDownload, onClick = session::dismissRequiredTour) { Text("Not now") }
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small,
+                        enabled = !downloading, onClick = { beginDownload(fromHost = false) },
+                    ) { Text("Download Locally (Recommended)", textAlign = TextAlign.Center) }
+                    OutlinedButton(
+                        modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small,
+                        enabled = !downloading && group.hostDownloadAvailable, onClick = { beginDownload(fromHost = true) },
+                    ) { Text("Download from Host") }
+                    TextButton(
+                        modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small,
+                        enabled = !preparingSessionDownload, onClick = session::dismissRequiredTour,
+                    ) { Text("Cancel") }
+                }
             },
         )
     }

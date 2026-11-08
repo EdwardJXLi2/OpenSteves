@@ -13,6 +13,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.SystemClock
+import dev.hydranet.opensteves.data.TourRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -20,6 +21,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -29,12 +31,15 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.io.File
 import java.io.IOException
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 
 @SuppressLint("MissingPermission")
@@ -50,7 +55,10 @@ class SessionManager private constructor(private val context: Context) {
     private var playback: SessionPlayback? = null
     private var scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var server: BluetoothServerSocket? = null
+    private var transferServer: BluetoothServerSocket? = null
     private var connectingSocket: BluetoothSocket? = null
+    private var requiredTourOffer: RequiredTourOffer? = null
+    private val tourExportMutex = Mutex()
     private val peers = mutableMapOf<String, Peer>()
     private var correction: Job? = null
     private var guestApplyTail: Job? = null
@@ -80,12 +88,17 @@ class SessionManager private constructor(private val context: Context) {
     private val playbackDebouncer = SessionPlaybackDebouncer()
 
     private data class PendingRequest(val playback: ScheduledPlayback, val timeout: Job)
+    private data class RequiredTourOffer(val audio: PlaybackSnapshot, val address: String, val available: Boolean)
 
     private class Peer(val socket: BluetoothSocket, val address: String, val name: String, val debugId: Int) {
         val outgoing = Channel<ByteArray>(16)
         var ready = false
         var acceptsPing = false
         var commandReceipts = false
+        var hostDownloadAvailable = false
+        var offeredAudio: PlaybackSnapshot? = null
+        var transferSocket: BluetoothSocket? = null
+        var transferJob: Job? = null
         var lastReceived = SystemClock.elapsedRealtime()
         var sentFrames = 0L
         var receivedFrames = 0L
@@ -93,6 +106,8 @@ class SessionManager private constructor(private val context: Context) {
         val pendingPings = mutableSetOf<Long>()
         val rtt = SessionRttStatistics()
         fun close() {
+            transferJob?.cancel()
+            runCatching { transferSocket?.close() }
             outgoing.close()
             runCatching { socket.close() }
         }
@@ -254,17 +269,24 @@ class SessionManager private constructor(private val context: Context) {
         }
     }
 
-    private fun start(action: String, address: String? = null) {
+    private fun start(action: String, address: String? = null, downloadFromHost: Boolean = false) {
+        if (!downloadFromHost) requiredTourOffer = null
         debugStartedAt = now()
         debugPeerId = 0
         sentFrames = 0
         receivedFrames = 0
         mutableDebugEvents.value = emptyList()
-        mutableState.value = SessionState(if (action == SessionService.ACTION_HOST) "host" else "guest", "Starting Bluetooth session…")
+        mutableState.value = SessionState(
+            if (action == SessionService.ACTION_HOST) "host" else "guest", "Starting Bluetooth session…",
+            requiredTourId = requiredTourOffer?.audio?.tourId,
+            hostDownloadAvailable = requiredTourOffer?.available == true,
+            downloadingFromHost = downloadFromHost,
+        )
         debug("SESSION", "Starting ${state.value.role}; protocol $PROTOCOL_VERSION; RFCOMM $SERVICE_UUID")
         debug("SETTINGS", debugSettings.value.toString())
         try {
-            context.startForegroundService(Intent(context, SessionService::class.java).setAction(action).putExtra("address", address))
+            context.startForegroundService(Intent(context, SessionService::class.java).setAction(action)
+                .putExtra("address", address).putExtra("downloadFromHost", downloadFromHost))
         } catch (error: RuntimeException) {
             debug("ERROR", "Starting session service failed: ${error.javaClass.simpleName}")
             fail("Could not start Bluetooth. Keep the app open and check Nearby devices permission.")
@@ -285,6 +307,7 @@ class SessionManager private constructor(private val context: Context) {
                 val listener = adapter()?.listenUsingRfcommWithServiceRecord("OpenSteves", SERVICE_UUID)
                     ?: throw IOException("Bluetooth unavailable")
                 server = listener
+                startTourSharing(currentGeneration)
                 debug("SESSION", "Listening for paired guests")
                 scope.launch(Dispatchers.IO) {
                     try {
@@ -300,8 +323,10 @@ class SessionManager private constructor(private val context: Context) {
                                         val peer = register(socket)
                                         accepted = true
                                         val greeting = playback?.snapshot() ?: snapshot
+                                        peer.offeredAudio = greeting
                                         send(peer, frame("hello").put("audio", encode(greeting))
-                                            .put("lead", schedulingLeadMs).put("commandReceipts", true))
+                                            .put("lead", schedulingLeadMs).put("commandReceipts", true)
+                                            .put("hostDownload", transferServer != null))
                                         refreshPeers()
                                     } else if (generation == currentGeneration) {
                                         debug("CONNECTION", "Rejected connection: unpaired or duplicate")
@@ -330,9 +355,12 @@ class SessionManager private constructor(private val context: Context) {
         }
     }
 
-    internal fun beginJoin(address: String) {
+    internal fun beginJoin(address: String, downloadFromHost: Boolean = false) {
         resetConnections()
-        mutableState.value = SessionState("guest", "Connecting to host…")
+        mutableState.value = SessionState("guest", "Connecting to host…",
+            requiredTourId = if (downloadFromHost) requiredTourOffer?.audio?.tourId else null,
+            hostDownloadAvailable = downloadFromHost && requiredTourOffer?.available == true,
+            downloadingFromHost = downloadFromHost)
         val currentGeneration = generation
         scope.launch {
             try {
@@ -360,10 +388,179 @@ class SessionManager private constructor(private val context: Context) {
         }
     }
 
+    private fun startTourSharing(currentGeneration: Long) {
+        val listener = try {
+            adapter()?.listenUsingRfcommWithServiceRecord("OpenSteves tour download", SessionTourTransfer.SERVICE_UUID)
+                ?: throw IOException("Bluetooth unavailable")
+        } catch (error: Exception) {
+            debug("DOWNLOAD", "Host sharing unavailable: ${error.javaClass.simpleName}")
+            return
+        }
+        transferServer = listener
+        scope.launch(Dispatchers.IO) {
+            try {
+                while (isActive) {
+                    val socket = listener.accept()
+                    var accepted = false
+                    try {
+                        withContext(Dispatchers.Main.immediate) {
+                            val peer = peers[socket.remoteDevice.address]
+                            val audio = peer?.offeredAudio
+                            if (generation == currentGeneration && peer != null && audio != null &&
+                                socket.remoteDevice.bondState == BluetoothDevice.BOND_BONDED && peer.transferSocket == null
+                            ) {
+                                serveTour(peer, socket, audio)
+                                accepted = true
+                            }
+                        }
+                    } finally {
+                        if (!accepted) runCatching { socket.close() }
+                    }
+                }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                withContext(Dispatchers.Main.immediate) {
+                    if (generation == currentGeneration) {
+                        transferServer = null
+                        debug("DOWNLOAD", "Host sharing stopped: ${error.javaClass.simpleName}")
+                    }
+                }
+            } finally {
+                runCatching { listener.close() }
+            }
+        }
+    }
+
+    private fun serveTour(peer: Peer, socket: BluetoothSocket, audio: PlaybackSnapshot) {
+        peer.transferSocket = socket
+        peer.transferJob = scope.launch {
+            debug("DOWNLOAD", "Peer ${peer.debugId}: requested tour ${audio.tourId}")
+            try {
+                withContext(Dispatchers.IO) {
+                    withTransferTimeout(socket) { activity ->
+                        val output = DataOutputStream(socket.outputStream)
+                        SessionTourTransfer.readRequest(DataInputStream(socket.inputStream), audio)
+                        activity()
+                        if (!tourExportMutex.tryLock()) {
+                            SessionTourTransfer.writeError(output, "busy")
+                            return@withTransferTimeout
+                        }
+                        try {
+                            val archive = try {
+                                TourRepository.get(context).exportForSharing(audio.tourId, audio.hash)
+                            } catch (error: Exception) {
+                                if (error is CancellationException) throw error
+                                SessionTourTransfer.writeError(output, "unavailable")
+                                throw error
+                            }
+                            try {
+                                SessionTourTransfer.sendArchive(output, archive, activity)
+                                SessionTourTransfer.awaitAcknowledgement(DataInputStream(socket.inputStream))
+                            } finally {
+                                archive.file.delete()
+                            }
+                        } finally {
+                            tourExportMutex.unlock()
+                        }
+                    }
+                }
+                debug("DOWNLOAD", "Peer ${peer.debugId}: tour transfer finished")
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                debug("DOWNLOAD", "Peer ${peer.debugId}: transfer failed: ${error.javaClass.simpleName}")
+            } finally {
+                runCatching { socket.close() }
+                if (peer.transferSocket === socket) {
+                    peer.transferSocket = null
+                    peer.transferJob = null
+                }
+            }
+        }
+    }
+
+    private fun downloadTour(peer: Peer, audio: PlaybackSnapshot) {
+        val currentGeneration = generation
+        peer.transferJob = scope.launch {
+            var socket: BluetoothSocket? = null
+            try {
+                val connection = peer.socket.remoteDevice.createRfcommSocketToServiceRecord(SessionTourTransfer.SERVICE_UUID)
+                socket = connection
+                peer.transferSocket = connection
+                debug("DOWNLOAD", "Downloading tour ${audio.tourId} from the host")
+                mutableState.value = state.value.copy(status = "Downloading tour from host…")
+                withContext(Dispatchers.IO) {
+                    val archive = File.createTempFile("host-tour-", ".zip", context.cacheDir)
+                    try {
+                        withTransferTimeout(connection, 20_000) { connection.connect() }
+                        val tour = withTransferTimeout(connection) { activity ->
+                            SessionTourTransfer.writeRequest(DataOutputStream(connection.outputStream), audio)
+                            val received = SessionTourTransfer.receiveArchive(DataInputStream(connection.inputStream), audio, archive, activity) { progress ->
+                                withContext(Dispatchers.Main.immediate) {
+                                    if (generation == currentGeneration) {
+                                        mutableState.value = state.value.copy(hostDownloadProgress = progress)
+                                    }
+                                }
+                            }
+                            SessionTourTransfer.acknowledge(DataOutputStream(connection.outputStream))
+                            received
+                        }
+                        connection.close()
+                        TourRepository.get(context).installSharedTour(tour, archive, audio.hash)
+                    } finally {
+                        archive.delete()
+                    }
+                }
+                if (generation == currentGeneration && peers[peer.address] === peer) {
+                    debug("DOWNLOAD", "Tour ${audio.tourId} installed; audio hash verified")
+                    requiredTourOffer = null
+                    mutableState.value = state.value.copy(requiredTourId = null, hostDownloadAvailable = false,
+                        downloadingFromHost = false, hostDownloadProgress = null, hostDownloadError = null)
+                    prepareGuest(peer, audio)
+                }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                if (generation == currentGeneration) {
+                    debug("DOWNLOAD", "Host download failed: ${error.javaClass.simpleName}")
+                    fail(if (error is HostDownloadException) error.message!!
+                        else "Could not download the tour from the host. Keep both phones nearby and try again, or download locally.")
+                }
+            } finally {
+                runCatching { socket?.close() }
+                if (peer.transferSocket === socket) {
+                    peer.transferSocket = null
+                    peer.transferJob = null
+                }
+            }
+        }
+    }
+
+    private suspend fun <T> withTransferTimeout(
+        socket: BluetoothSocket,
+        timeoutMs: Long = 120_000,
+        block: suspend (() -> Unit) -> T,
+    ): T = coroutineScope {
+        val lastActivity = AtomicLong(now())
+        val watchdog = launch(Dispatchers.IO) {
+            while (isActive) {
+                delay(1_000)
+                if (now() - lastActivity.get() >= timeoutMs) {
+                    runCatching { socket.close() }
+                    return@launch
+                }
+            }
+        }
+        try {
+            block { lastActivity.set(now()) }
+        } finally {
+            watchdog.cancel()
+        }
+    }
+
     fun leave() {
         if (state.value.role != "none") debug("SESSION", "Leaving ${state.value.role} session; pausing playback")
         if (state.value.role != "none") playback?.pause()
         resetConnections()
+        requiredTourOffer = null
         mutableState.value = SessionState(status = "Session ended")
         context.stopService(Intent(context, SessionService::class.java))
     }
@@ -384,19 +581,36 @@ class SessionManager private constructor(private val context: Context) {
     }
 
     internal fun fail(message: String) {
+        val offer = requiredTourOffer.takeIf { state.value.downloadingFromHost }
         debug("ERROR", message)
         leave()
-        mutableState.value = SessionState(error = message)
+        if (offer == null) mutableState.value = SessionState(error = message)
+        else {
+            requiredTourOffer = offer
+            mutableState.value = SessionState(requiredTourId = offer.audio.tourId,
+                hostDownloadAvailable = offer.available, hostDownloadError = message)
+        }
     }
 
-    private fun requireTour(tourId: Int) {
-        debug("ERROR", "Tour $tourId is missing or its audio hash differs from the host")
+    private fun requireTour(peer: Peer, audio: PlaybackSnapshot) {
+        debug("ERROR", "Tour ${audio.tourId} is missing or its audio hash differs from the host")
+        val offer = RequiredTourOffer(audio, peer.address, peer.hostDownloadAvailable)
         leave()
-        mutableState.value = SessionState(requiredTourId = tourId)
+        requiredTourOffer = offer
+        mutableState.value = SessionState(requiredTourId = audio.tourId, hostDownloadAvailable = offer.available)
+    }
+
+    fun downloadRequiredTourFromHost() {
+        val offer = requiredTourOffer ?: return
+        if (!offer.available || state.value.downloadingFromHost || !canStart()) return
+        start(SessionService.ACTION_JOIN, offer.address, downloadFromHost = true)
     }
 
     fun dismissRequiredTour() {
-        mutableState.value = state.value.copy(requiredTourId = null)
+        if (state.value.downloadingFromHost) leave()
+        requiredTourOffer = null
+        mutableState.value = state.value.copy(requiredTourId = null, hostDownloadAvailable = false,
+            hostDownloadProgress = null, hostDownloadError = null)
     }
 
     internal fun serviceDestroyed() {
@@ -590,38 +804,58 @@ class SessionManager private constructor(private val context: Context) {
                 "hello" -> {
                     require(hostGreeting == null)
                     peer.commandReceipts = message.optBoolean("commandReceipts")
+                    peer.hostDownloadAvailable = message.optBoolean("hostDownload")
                     readHostSchedulingLead(message)
                     val audio = decode(message.getJSONObject("audio"))
+                    hostGreeting = audio
                     if (playback?.hasAudio(audio.tourId, audio.hash) != true) {
-                        requireTour(audio.tourId)
+                        if (state.value.downloadingFromHost) {
+                            val offered = requiredTourOffer?.audio
+                            if (offered == null || offered.tourId != audio.tourId || offered.hash != audio.hash) {
+                                requireTour(peer, audio)
+                                return
+                            }
+                            requiredTourOffer = RequiredTourOffer(audio, peer.address, peer.hostDownloadAvailable)
+                            mutableState.value = state.value.copy(requiredTourId = audio.tourId,
+                                hostDownloadAvailable = peer.hostDownloadAvailable)
+                            if (peer.hostDownloadAvailable) downloadTour(peer, audio)
+                            else fail("This host cannot share tours. Update the host app or download locally.")
+                        } else requireTour(peer, audio)
                         return
                     }
-                    hostGreeting = audio
-                    playback?.apply(audio.copy(playing = false))
-                    scope.launch {
-                        repeat(4) {
-                            ping(peer)
-                            delay(150)
-                        }
-                        val deadline = now() + 10_000
-                        while (now() < deadline) {
-                            if (selectedClockRttMs != Long.MAX_VALUE && playback?.isReady() == true &&
-                                playback?.snapshot()?.tourId == audio.tourId
-                            ) {
-                                peer.ready = true
-                                debug("CONNECTION", "Host connection ready; audio verified and clock synchronized")
-                                send(peer, frame("ready").put("acceptsPing", true))
-                                refreshPeers()
-                                return@launch
-                            }
-                            delay(100)
-                        }
-                        fail("Could not sync this tour. Start it again, then rejoin the session.")
-                    }
+                    requiredTourOffer = null
+                    mutableState.value = state.value.copy(requiredTourId = null, hostDownloadAvailable = false,
+                        downloadingFromHost = false, hostDownloadProgress = null, hostDownloadError = null)
+                    prepareGuest(peer, audio)
                 }
                 "state" -> if (peer.ready) receiveState(message)
                 else -> throw IOException("Unexpected session frame")
             }
+        }
+    }
+
+    private fun prepareGuest(peer: Peer, audio: PlaybackSnapshot) {
+        playback?.apply(audio.copy(playing = false))
+        mutableState.value = state.value.copy(status = "Synchronizing with host…")
+        scope.launch {
+            repeat(4) {
+                ping(peer)
+                delay(150)
+            }
+            val deadline = now() + 10_000
+            while (now() < deadline) {
+                if (selectedClockRttMs != Long.MAX_VALUE && playback?.isReady() == true &&
+                    playback?.snapshot()?.tourId == audio.tourId
+                ) {
+                    peer.ready = true
+                    debug("CONNECTION", "Host connection ready; audio verified and clock synchronized")
+                    send(peer, frame("ready").put("acceptsPing", true))
+                    refreshPeers()
+                    return@launch
+                }
+                delay(100)
+            }
+            fail("Could not sync this tour. Start it again, then rejoin the session.")
         }
     }
 
@@ -664,7 +898,7 @@ class SessionManager private constructor(private val context: Context) {
         readHostSchedulingLead(message)
         val target = decode(message.getJSONObject("audio"))
         if (playback?.hasAudio(target.tourId, target.hash) != true) {
-            requireTour(target.tourId)
+            peers.values.firstOrNull()?.let { requireTour(it, target) }
             return
         }
         val hostAt = message.getLong("at")
@@ -762,6 +996,7 @@ class SessionManager private constructor(private val context: Context) {
 
     private fun sendState(peer: Peer, snapshot: PlaybackSnapshot, at: Long, seq: Long, force: Boolean,
         seek: Boolean = true, requestId: Long? = null) {
+        peer.offeredAudio = snapshot
         send(peer, frame("state").put("audio", encode(snapshot)).put("at", at).put("sequence", seq)
             .put("force", force).put("seek", seek).put("lead", schedulingLeadMs)
             .apply { requestId?.let { put("request", it) } })
@@ -790,6 +1025,8 @@ class SessionManager private constructor(private val context: Context) {
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         runCatching { server?.close() }
         server = null
+        runCatching { transferServer?.close() }
+        transferServer = null
         runCatching { connectingSocket?.close() }
         connectingSocket = null
         peers.values.forEach { it.close() }
