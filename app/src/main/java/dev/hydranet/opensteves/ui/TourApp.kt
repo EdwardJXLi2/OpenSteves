@@ -3,6 +3,8 @@
 package dev.hydranet.opensteves.ui
 
 import android.Manifest
+import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.BackHandler
@@ -66,6 +68,10 @@ fun TourApp(
     var refreshing by remember { mutableStateOf(false) }
     var importing by remember { mutableStateOf(false) }
     var importJob by remember { mutableStateOf<Job?>(null) }
+    var audioExportMenu by remember(selectedId) { mutableStateOf(false) }
+    var pendingAudioExportId by rememberSaveable { mutableStateOf<Int?>(null) }
+    var exportingAudio by remember { mutableStateOf(false) }
+    var audioExportJob by remember { mutableStateOf<Job?>(null) }
     var preparingSessionDownload by remember { mutableStateOf(false) }
     var sessionDownloadError by remember(group.requiredTourId) { mutableStateOf<String?>(null) }
     val savedScreens = rememberSaveableStateHolder()
@@ -123,6 +129,28 @@ fun TourApp(
                 } finally {
                     importing = false
                     importJob = null
+                }
+            }
+        }
+    }
+
+    val audioSaver = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val id = pendingAudioExportId
+        pendingAudioExportId = null
+        val destination = result.data?.data
+        if (result.resultCode == Activity.RESULT_OK && id != null && destination != null) {
+            exportingAudio = true
+            audioExportJob = scope.launch {
+                try {
+                    repository.exportAudio(id, destination)
+                    report("Audio saved to device.")
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    report("Could not save the audio. Check the destination and available storage.")
+                } finally {
+                    exportingAudio = false
+                    audioExportJob = null
                 }
             }
         }
@@ -226,6 +254,33 @@ fun TourApp(
                                 Icon(if (darkTheme) Icons.Outlined.LightMode else Icons.Outlined.DarkMode, if (darkTheme) "Switch to light theme" else "Switch to dark theme")
                             }
                         } else if (selected != null && installed.containsKey(selected.id)) {
+                            Box {
+                                IconButton(
+                                    onClick = { audioExportMenu = true },
+                                    enabled = !exportingAudio && pendingAudioExportId == null,
+                                ) { Icon(Icons.Outlined.Download, "Download audio") }
+                                DropdownMenu(expanded = audioExportMenu, onDismissRequest = { audioExportMenu = false }) {
+                                    DropdownMenuItem(
+                                        text = { Text(if (selected.isCustom) "Download audio to device" else "Download tour audio to device") },
+                                        onClick = {
+                                            audioExportMenu = false
+                                            val audio = installed.getValue(selected.id).tour
+                                            val name = audio.title.replace(Regex("""[\\/\p{Cntrl}]"""), "_")
+                                                .ifBlank { audio.baseFileName }
+                                            pendingAudioExportId = audio.id
+                                            try {
+                                                audioSaver.launch(Intent(Intent.ACTION_CREATE_DOCUMENT)
+                                                    .addCategory(Intent.CATEGORY_OPENABLE)
+                                                    .setType(audio.audioMimeType)
+                                                    .putExtra(Intent.EXTRA_TITLE, name + "." + audio.audioExtension))
+                                            } catch (_: RuntimeException) {
+                                                pendingAudioExportId = null
+                                                report("Could not open the save picker.")
+                                            }
+                                        },
+                                    )
+                                }
+                            }
                             IconButton(onClick = {
                                 when {
                                     player.tourId == selected.id && group.role != "none" -> report("End the session and stop playback before deleting this audio.")
@@ -416,6 +471,16 @@ fun TourApp(
             text = { LinearProgressIndicator(Modifier.fillMaxWidth()) },
             confirmButton = {
                 TextButton(onClick = { importJob?.cancel() }) { Text("Cancel") }
+            },
+        )
+    }
+    if (exportingAudio) {
+        AlertDialog(
+            onDismissRequest = { audioExportJob?.cancel() },
+            title = { Text("Saving audio…") },
+            text = { LinearProgressIndicator(Modifier.fillMaxWidth()) },
+            confirmButton = {
+                TextButton(onClick = { audioExportJob?.cancel() }) { Text("Cancel") }
             },
         )
     }

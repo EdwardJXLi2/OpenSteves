@@ -19,6 +19,11 @@ data class Tour(
     val durationMs: Long = 0,
 ) {
     val audioFileName: String get() = "$baseFileName.$audioExtension"
+    val audioMimeType: String get() = when (audioExtension) {
+        "mp3" -> "audio/mpeg"
+        "m4a" -> "audio/mp4"
+        else -> "audio/$audioExtension"
+    }
 
     internal fun toJson(): JSONObject = JSONObject()
         .put("id", id).put("title", title).put("region", region).put("type", type)

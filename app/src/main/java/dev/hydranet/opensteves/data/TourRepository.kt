@@ -3,6 +3,7 @@ package dev.hydranet.opensteves.data
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.provider.DocumentsContract
 import android.util.AtomicFile
 import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
@@ -17,6 +18,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
@@ -240,6 +242,36 @@ class TourRepository private constructor(private val context: Context) {
         saveSubtitles(id, cues)
     }
 
+    // The destination must be a new document created for this export.
+    suspend fun exportAudio(id: Int, destination: Uri) = withContext(Dispatchers.IO) {
+        try {
+            initialized.await()
+            lock(id).withLock {
+                val audio = audioFile(id) ?: throw IOException("Download this audio first.")
+                audio.inputStream().use { input ->
+                    val output = context.contentResolver.openOutputStream(destination, "wt")
+                        ?: throw IOException("Could not open the destination file.")
+                    output.use {
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            currentCoroutineContext().ensureActive()
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            it.write(buffer, 0, count)
+                        }
+                        currentCoroutineContext().ensureActive()
+                        it.flush()
+                    }
+                }
+            }
+        } catch (error: Exception) {
+            withContext(NonCancellable) {
+                runCatching { DocumentsContract.deleteDocument(context.contentResolver, destination) }
+            }
+            throw error
+        }
+    }
+
     suspend fun generateSubtitles(id: Int, endpoint: String, apiKey: String, model: String) = withContext(Dispatchers.IO) {
         initialized.await()
         require(model.isNotBlank() && !model.contains('\r') && !model.contains('\n')) { "Enter a transcription model" }
@@ -247,7 +279,8 @@ class TourRepository private constructor(private val context: Context) {
         require(url.protocol == "https" && url.userInfo == null) { "Use an HTTPS transcription endpoint" }
         require(!apiKey.contains('\r') && !apiKey.contains('\n')) { "Invalid API key" }
         val audio = audioFile(id) ?: throw IOException("Download this tour first")
-        val audioExtension = _installed.value.getValue(id).tour.audioExtension
+        val tour = _installed.value.getValue(id).tour
+        val audioExtension = tour.audioExtension
         val expectedHash = _installed.value[id]?.audioHash ?: throw IOException("Download this tour first")
         val boundary = "OpenSteves${UUID.randomUUID()}"
         val connection = connection(url.toString()).apply {
@@ -268,14 +301,7 @@ class TourRepository private constructor(private val context: Context) {
                 field("model", model)
                 field("response_format", "verbose_json")
                 field("timestamp_granularities[]", "segment")
-                val mime = when (audioExtension) {
-                    "mp3" -> "audio/mpeg"
-                    "m4a" -> "audio/mp4"
-                    "aac" -> "audio/aac"
-                    "wav" -> "audio/wav"
-                    "flac" -> "audio/flac"
-                    else -> "audio/ogg"
-                }
+                val mime = tour.audioMimeType
                 output.write("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.$audioExtension\"\r\nContent-Type: $mime\r\n\r\n".toByteArray())
                 audio.inputStream().use { input ->
                     val buffer = ByteArray(64 * 1024)
