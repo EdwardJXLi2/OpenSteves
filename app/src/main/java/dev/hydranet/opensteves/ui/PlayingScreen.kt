@@ -23,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.hydranet.opensteves.data.*
@@ -43,6 +44,10 @@ internal fun PlayingScreen(
     onFullScreenChange: (Boolean) -> Unit,
     onPlay: (Long?) -> Unit,
 ) {
+    if (tour.isCustom) {
+        CustomAudioPlayer(tour, repository, playback, assetVersion, sessionActive, onPlay)
+        return
+    }
     val player by playback.state.collectAsState()
     var tab by rememberSaveable(tour.id) { mutableIntStateOf(0) }
     val chapterResult by produceState<Result<List<Chapter>>?>(null, tour.id, assetVersion) {
@@ -150,6 +155,54 @@ internal fun PlayingScreen(
                     } else SelectionContainer(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 20.dp)) {
                         Text(transcript.ifEmpty { captions.joinToString("\n\n") { it.text } }.trim(), style = MaterialTheme.typography.bodyLarge)
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CustomAudioPlayer(
+    tour: Tour,
+    repository: TourRepository,
+    playback: PlaybackConnection,
+    assetVersion: String?,
+    sessionActive: Boolean,
+    onPlay: (Long?) -> Unit,
+) {
+    val player by playback.state.collectAsState()
+    val artwork by produceState<File?>(null, tour.id, assetVersion) {
+        value = withContext(Dispatchers.IO) { repository.imageFile(tour.id) }
+    }
+    val captions by produceState<List<SubtitleCue>>(emptyList(), tour.id, assetVersion) {
+        value = withContext(Dispatchers.IO) {
+            runCatching { repository.subtitlesFile(tour.id)?.readText()?.let(TimedText::parseSubtitles).orEmpty() }.getOrDefault(emptyList())
+        }
+    }
+    val active = player.tourId == tour.id
+    val canPlay = !sessionActive || active
+    val state = if (active) player else PlaybackUiState(durationMs = tour.durationMs)
+    val caption = captions.lastOrNull { active && state.positionMs >= it.startMs && state.positionMs < it.endMs }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val artworkSize = minOf(maxWidth - 40.dp, maxHeight * 0.42f, 320.dp).coerceAtLeast(96.dp)
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            TourThumbnail(artwork, Modifier.size(artworkSize), fallbackIcon = Icons.Default.MusicNote)
+            Text(tour.title, Modifier.fillMaxWidth(), style = MaterialTheme.typography.headlineSmall,
+                textAlign = TextAlign.Center, fontWeight = FontWeight.Medium)
+            if (tour.artist.isNotBlank()) Text(tour.artist, style = MaterialTheme.typography.bodyLarge,
+                textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (tour.album.isNotBlank()) Text(tour.album, style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            PlayerControls(state, active, canPlay, { onPlay(null) }, playback)
+            if (!canPlay) Text("Leave the current session to play different audio.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            caption?.let {
+                Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = MaterialTheme.shapes.medium) {
+                    Text(it.text, Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
                 }
             }
         }

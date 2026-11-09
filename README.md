@@ -16,6 +16,8 @@ Stop the current tour before deleting or updating its download.
 
 Walking tour transcripts are not timed captions.
 
+Use **Import Audio** in Explore to add files to **Downloaded**.
+
 ## Listen together
 
 Listen to the same tour on multiple phones through a shared Bluetooth session.
@@ -29,6 +31,7 @@ Each phone plays its own downloaded audio, so the session requires no Wi-Fi or m
 Everyone can control playback.
 If a guest needs the tour, select **Download from Host** to copy it over Bluetooth and join automatically.
 The copy includes audio, maps, and transcripts. The app verifies the audio before joining.
+Guests receive imported audio from the host over Bluetooth.
 Keep Bluetooth enabled and the phones within range.
 Leaving or losing the host pauses guest playback. Rejoin manually after restoring the connection.
 The host cannot transfer its role during a session.

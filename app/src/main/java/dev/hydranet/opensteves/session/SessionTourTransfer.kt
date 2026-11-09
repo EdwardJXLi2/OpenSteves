@@ -74,7 +74,8 @@ internal object SessionTourTransfer {
         val header = readHeader(input)
         if (header.has("error")) throw HostDownloadException(when (header.getString("error")) {
             "busy" -> "The host is sending another tour. Try again shortly."
-            else -> "The host could not share this tour. Try again or download locally."
+            else -> if (audio.tourId < 0) "The host could not share this audio. Try again."
+                else "The host could not share this tour. Try again or download locally."
         })
         val tour = Tour.fromJson(header.getJSONObject("tour"))
         require(tour.id == audio.tourId && header.getString("hash") == audio.hash) {

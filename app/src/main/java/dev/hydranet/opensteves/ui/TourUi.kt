@@ -45,11 +45,11 @@ internal object TourButtonDefaults {
 }
 
 @Composable
-internal fun TourThumbnail(file: File?, modifier: Modifier = Modifier) {
+internal fun TourThumbnail(file: File?, modifier: Modifier = Modifier, fallbackIcon: ImageVector = Icons.Default.AccountBalance) {
     val bitmap = rememberBitmap(file, 512).image
     Box(modifier.clip(RoundedCornerShape(5.dp)).background(MaterialTheme.colorScheme.surfaceContainer), contentAlignment = Alignment.Center) {
         if (bitmap != null) Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-        else Icon(Icons.Default.AccountBalance, null, Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        else Icon(fallbackIcon, null, Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

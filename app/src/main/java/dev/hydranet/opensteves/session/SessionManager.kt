@@ -88,7 +88,7 @@ class SessionManager private constructor(private val context: Context) {
     private val playbackDebouncer = SessionPlaybackDebouncer()
 
     private data class PendingRequest(val playback: ScheduledPlayback, val timeout: Job)
-    private data class RequiredTourOffer(val audio: PlaybackSnapshot, val address: String, val available: Boolean)
+    private data class RequiredTourOffer(val audio: PlaybackSnapshot, val address: String, val available: Boolean, val title: String?)
 
     private class Peer(val socket: BluetoothSocket, val address: String, val name: String, val debugId: Int) {
         val outgoing = Channel<ByteArray>(16)
@@ -96,6 +96,7 @@ class SessionManager private constructor(private val context: Context) {
         var acceptsPing = false
         var commandReceipts = false
         var hostDownloadAvailable = false
+        var audioTitle: String? = null
         var offeredAudio: PlaybackSnapshot? = null
         var transferSocket: BluetoothSocket? = null
         var transferJob: Job? = null
@@ -279,6 +280,7 @@ class SessionManager private constructor(private val context: Context) {
         mutableState.value = SessionState(
             if (action == SessionService.ACTION_HOST) "host" else "guest", "Starting Bluetooth session…",
             requiredTourId = requiredTourOffer?.audio?.tourId,
+            requiredAudioTitle = requiredTourOffer?.title,
             hostDownloadAvailable = requiredTourOffer?.available == true,
             downloadingFromHost = downloadFromHost,
         )
@@ -326,6 +328,7 @@ class SessionManager private constructor(private val context: Context) {
                                         peer.offeredAudio = greeting
                                         send(peer, frame("hello").put("audio", encode(greeting))
                                             .put("lead", schedulingLeadMs).put("commandReceipts", true)
+                                            .put("title", TourRepository.get(context).installed.value[greeting.tourId]?.tour?.title?.take(512))
                                             .put("hostDownload", transferServer != null))
                                         refreshPeers()
                                     } else if (generation == currentGeneration) {
@@ -359,6 +362,7 @@ class SessionManager private constructor(private val context: Context) {
         resetConnections()
         mutableState.value = SessionState("guest", "Connecting to host…",
             requiredTourId = if (downloadFromHost) requiredTourOffer?.audio?.tourId else null,
+            requiredAudioTitle = if (downloadFromHost) requiredTourOffer?.title else null,
             hostDownloadAvailable = downloadFromHost && requiredTourOffer?.available == true,
             downloadingFromHost = downloadFromHost)
         val currentGeneration = generation
@@ -487,7 +491,7 @@ class SessionManager private constructor(private val context: Context) {
                 socket = connection
                 peer.transferSocket = connection
                 debug("DOWNLOAD", "Downloading tour ${audio.tourId} from the host")
-                mutableState.value = state.value.copy(status = "Downloading tour from host…")
+                mutableState.value = state.value.copy(status = "Downloading audio from host…")
                 withContext(Dispatchers.IO) {
                     val archive = File.createTempFile("host-tour-", ".zip", context.cacheDir)
                     try {
@@ -513,7 +517,7 @@ class SessionManager private constructor(private val context: Context) {
                 if (generation == currentGeneration && peers[peer.address] === peer) {
                     debug("DOWNLOAD", "Tour ${audio.tourId} installed; audio hash verified")
                     requiredTourOffer = null
-                    mutableState.value = state.value.copy(requiredTourId = null, hostDownloadAvailable = false,
+                    mutableState.value = state.value.copy(requiredTourId = null, requiredAudioTitle = null, hostDownloadAvailable = false,
                         downloadingFromHost = false, hostDownloadProgress = null, hostDownloadError = null)
                     prepareGuest(peer, audio)
                 }
@@ -522,6 +526,7 @@ class SessionManager private constructor(private val context: Context) {
                 if (generation == currentGeneration) {
                     debug("DOWNLOAD", "Host download failed: ${error.javaClass.simpleName}")
                     fail(if (error is HostDownloadException) error.message!!
+                        else if (audio.tourId < 0) "Could not download the audio from the host. Keep both phones nearby and try again."
                         else "Could not download the tour from the host. Keep both phones nearby and try again, or download locally.")
                 }
             } finally {
@@ -587,17 +592,17 @@ class SessionManager private constructor(private val context: Context) {
         if (offer == null) mutableState.value = SessionState(error = message)
         else {
             requiredTourOffer = offer
-            mutableState.value = SessionState(requiredTourId = offer.audio.tourId,
+            mutableState.value = SessionState(requiredTourId = offer.audio.tourId, requiredAudioTitle = offer.title,
                 hostDownloadAvailable = offer.available, hostDownloadError = message)
         }
     }
 
     private fun requireTour(peer: Peer, audio: PlaybackSnapshot) {
         debug("ERROR", "Tour ${audio.tourId} is missing or its audio hash differs from the host")
-        val offer = RequiredTourOffer(audio, peer.address, peer.hostDownloadAvailable)
+        val offer = RequiredTourOffer(audio, peer.address, peer.hostDownloadAvailable, peer.audioTitle)
         leave()
         requiredTourOffer = offer
-        mutableState.value = SessionState(requiredTourId = audio.tourId, hostDownloadAvailable = offer.available)
+        mutableState.value = SessionState(requiredTourId = audio.tourId, requiredAudioTitle = offer.title, hostDownloadAvailable = offer.available)
     }
 
     fun downloadRequiredTourFromHost() {
@@ -609,7 +614,7 @@ class SessionManager private constructor(private val context: Context) {
     fun dismissRequiredTour() {
         if (state.value.downloadingFromHost) leave()
         requiredTourOffer = null
-        mutableState.value = state.value.copy(requiredTourId = null, hostDownloadAvailable = false,
+        mutableState.value = state.value.copy(requiredTourId = null, requiredAudioTitle = null, hostDownloadAvailable = false,
             hostDownloadProgress = null, hostDownloadError = null)
     }
 
@@ -805,26 +810,28 @@ class SessionManager private constructor(private val context: Context) {
                     require(hostGreeting == null)
                     peer.commandReceipts = message.optBoolean("commandReceipts")
                     peer.hostDownloadAvailable = message.optBoolean("hostDownload")
+                    peer.audioTitle = message.optString("title").take(512).trim().takeIf(String::isNotEmpty)
                     readHostSchedulingLead(message)
                     val audio = decode(message.getJSONObject("audio"))
                     hostGreeting = audio
-                    if (playback?.hasAudio(audio.tourId, audio.hash) != true) {
+                    if (playback?.localAudioId(audio.tourId, audio.hash) == null) {
                         if (state.value.downloadingFromHost) {
                             val offered = requiredTourOffer?.audio
                             if (offered == null || offered.tourId != audio.tourId || offered.hash != audio.hash) {
                                 requireTour(peer, audio)
                                 return
                             }
-                            requiredTourOffer = RequiredTourOffer(audio, peer.address, peer.hostDownloadAvailable)
-                            mutableState.value = state.value.copy(requiredTourId = audio.tourId,
+                            requiredTourOffer = RequiredTourOffer(audio, peer.address, peer.hostDownloadAvailable, peer.audioTitle)
+                            mutableState.value = state.value.copy(requiredTourId = audio.tourId, requiredAudioTitle = peer.audioTitle,
                                 hostDownloadAvailable = peer.hostDownloadAvailable)
                             if (peer.hostDownloadAvailable) downloadTour(peer, audio)
-                            else fail("This host cannot share tours. Update the host app or download locally.")
+                            else fail(if (audio.tourId < 0) "This host cannot share audio. Update the host app and try again."
+                                else "This host cannot share tours. Update the host app or download locally.")
                         } else requireTour(peer, audio)
                         return
                     }
                     requiredTourOffer = null
-                    mutableState.value = state.value.copy(requiredTourId = null, hostDownloadAvailable = false,
+                    mutableState.value = state.value.copy(requiredTourId = null, requiredAudioTitle = null, hostDownloadAvailable = false,
                         downloadingFromHost = false, hostDownloadProgress = null, hostDownloadError = null)
                     prepareGuest(peer, audio)
                 }
@@ -835,7 +842,11 @@ class SessionManager private constructor(private val context: Context) {
     }
 
     private fun prepareGuest(peer: Peer, audio: PlaybackSnapshot) {
-        playback?.apply(audio.copy(playing = false))
+        val local = localAudio(audio) ?: run {
+            requireTour(peer, audio)
+            return
+        }
+        playback?.apply(local.copy(playing = false))
         mutableState.value = state.value.copy(status = "Synchronizing with host…")
         scope.launch {
             repeat(4) {
@@ -845,7 +856,7 @@ class SessionManager private constructor(private val context: Context) {
             val deadline = now() + 10_000
             while (now() < deadline) {
                 if (selectedClockRttMs != Long.MAX_VALUE && playback?.isReady() == true &&
-                    playback?.snapshot()?.tourId == audio.tourId
+                    playback?.snapshot()?.tourId == local.tourId
                 ) {
                     peer.ready = true
                     debug("CONNECTION", "Host connection ready; audio verified and clock synchronized")
@@ -855,7 +866,7 @@ class SessionManager private constructor(private val context: Context) {
                 }
                 delay(100)
             }
-            fail("Could not sync this tour. Start it again, then rejoin the session.")
+            fail("Could not sync this audio. Start it again, then rejoin the session.")
         }
     }
 
@@ -896,9 +907,9 @@ class SessionManager private constructor(private val context: Context) {
             return
         }
         readHostSchedulingLead(message)
-        val target = decode(message.getJSONObject("audio"))
-        if (playback?.hasAudio(target.tourId, target.hash) != true) {
-            peers.values.firstOrNull()?.let { requireTour(it, target) }
+        val audio = decode(message.getJSONObject("audio"))
+        val target = localAudio(audio) ?: run {
+            peers.values.firstOrNull()?.let { requireTour(it, audio) }
             return
         }
         val hostAt = message.getLong("at")
@@ -1056,6 +1067,8 @@ class SessionManager private constructor(private val context: Context) {
         context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
 
     private fun now(): Long = SystemClock.elapsedRealtime()
+    private fun localAudio(audio: PlaybackSnapshot): PlaybackSnapshot? =
+        playback?.localAudioId(audio.tourId, audio.hash)?.let { audio.copy(tourId = it) }
     private fun frame(type: String): JSONObject = JSONObject().put("version", PROTOCOL_VERSION).put("type", type)
     private fun encode(snapshot: PlaybackSnapshot): JSONObject = JSONObject()
         .put("id", snapshot.tourId).put("hash", snapshot.hash).put("position", snapshot.positionMs)
@@ -1063,7 +1076,7 @@ class SessionManager private constructor(private val context: Context) {
 
     private fun decode(json: JSONObject): PlaybackSnapshot {
         val snapshot = PlaybackSnapshot(json.getInt("id"), json.getString("hash"), json.getLong("position"), json.getBoolean("playing"), json.getDouble("speed").toFloat())
-        require(snapshot.tourId > 0 && snapshot.hash.matches(Regex("[a-fA-F0-9]{64}")))
+        require(snapshot.tourId != 0 && snapshot.hash.matches(Regex("[a-fA-F0-9]{64}")))
         require(snapshot.positionMs in 0..SessionTiming.MAX_POSITION_MS && snapshot.speed.isFinite() && snapshot.speed in 0.5f..2f)
         return snapshot
     }

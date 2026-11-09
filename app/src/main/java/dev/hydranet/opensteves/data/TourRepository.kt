@@ -2,6 +2,7 @@ package dev.hydranet.opensteves.data
 
 import android.content.Context
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.util.AtomicFile
 import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
@@ -44,6 +45,7 @@ class TourRepository private constructor(private val context: Context) {
     private val root = File(context.filesDir, "tours")
     private val catalogFile = File(context.filesDir, "catalog.json")
     private val catalogMutex = Mutex()
+    private val customImportMutex = Mutex()
     private val tourLocks = ConcurrentHashMap<Int, Mutex>()
     private val _tours = MutableStateFlow<List<Tour>>(emptyList())
     val tours: StateFlow<List<Tour>> = _tours.asStateFlow()
@@ -115,6 +117,7 @@ class TourRepository private constructor(private val context: Context) {
     }
 
     fun download(tour: Tour) {
+        require(!tour.isCustom) { "Custom audio is shared through Bluetooth or imported from a file." }
         val work = OneTimeWorkRequestBuilder<DownloadWorker>()
             .setInputData(workDataOf("tour" to tour.toJson().toString()))
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
@@ -140,7 +143,15 @@ class TourRepository private constructor(private val context: Context) {
         }
     }
 
-    fun audioFile(id: Int): File? = asset(id, "mp3")
+    fun audioFile(id: Int): File? = _installed.value[id]?.let {
+        File(directory(id), it.tour.audioFileName).takeIf(File::isFile)
+    }
+
+    fun localAudioId(tourId: Int, hash: String): Int? = if (tourId < 0) {
+        _installed.value.values.firstOrNull {
+            it.tour.isCustom && it.audioHash == hash && audioFile(it.tour.id) != null
+        }?.tour?.id
+    } else tourId.takeIf { _installed.value[it]?.audioHash == hash && audioFile(it) != null }
     fun mapFile(id: Int): File? = asset(id, "png")
     fun transcriptFile(id: Int): File? = asset(id, "txt")
     fun chapterFile(id: Int): File? = asset(id, "vtt")
@@ -160,10 +171,64 @@ class TourRepository private constructor(private val context: Context) {
                 require(directoryName.matches(Regex("bundle-[a-f0-9-]+")))
                 require(folder.name == tour.id.toString())
                 val bundle = File(folder, directoryName)
-                require(File(bundle, "${tour.baseFileName}.mp3").isFile)
+                require(File(bundle, tour.audioFileName).isFile)
                 tour.id to InstalledTour(tour, json.getLong("sizeBytes"), json.getString("audioHash"), directoryName)
             }.getOrNull()
         }.toMap()
+    }
+
+    suspend fun importAudio(uri: Uri): Tour = withContext(Dispatchers.IO) {
+        initialized.await()
+        val displayName = runCatching {
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                if (it.moveToFirst()) it.getString(0) else null
+            }
+        }.getOrNull() ?: "Imported audio"
+        val imported = File.createTempFile("imported-audio-", ".audio", context.cacheDir)
+        try {
+            val digest = MessageDigest.getInstance("SHA-256")
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                imported.outputStream().use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    var size = 0L
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        size += count
+                        require(size <= CustomAudioImport.MAX_AUDIO_BYTES) { "Choose an audio file smaller than 508 MiB." }
+                        digest.update(buffer, 0, count)
+                        output.write(buffer, 0, count)
+                    }
+                    require(size > 0) { "The selected audio file is empty." }
+                }
+            } ?: throw IOException("Could not open this audio file")
+            val hash = digest.digest().joinToString("") { "%02x".format(it) }
+            val metadata = CustomAudioImport.read(imported, displayName)
+            customImportMutex.withLock {
+                localAudioId(-1, hash)?.let { return@withLock _installed.value.getValue(it).tour }
+                val tour = Tour(
+                    customAudioId(hash), metadata.title, "", "Custom audio", "", "", "audio", 1, imported.length(),
+                    isCustom = true, audioExtension = metadata.extension, artist = metadata.artist,
+                    album = metadata.album, durationMs = metadata.durationMs,
+                )
+                lock(tour.id).withLock {
+                    val stage = newStage(tour.id)
+                    var published = false
+                    try {
+                        require(imported.renameTo(File(stage, tour.audioFileName))) { "Could not save the imported audio" }
+                        CustomAudioImport.writeArtwork(metadata.artwork, File(stage, "images/01.jpg"))
+                        publishInstall(tour, stage, hash)
+                        published = true
+                        tour
+                    } finally {
+                        if (!published) stage.deleteRecursively()
+                    }
+                }
+            }
+        } finally {
+            imported.delete()
+        }
     }
 
     suspend fun importSubtitles(id: Int, uri: Uri) = withContext(Dispatchers.IO) {
@@ -182,6 +247,7 @@ class TourRepository private constructor(private val context: Context) {
         require(url.protocol == "https" && url.userInfo == null) { "Use an HTTPS transcription endpoint" }
         require(!apiKey.contains('\r') && !apiKey.contains('\n')) { "Invalid API key" }
         val audio = audioFile(id) ?: throw IOException("Download this tour first")
+        val audioExtension = _installed.value.getValue(id).tour.audioExtension
         val expectedHash = _installed.value[id]?.audioHash ?: throw IOException("Download this tour first")
         val boundary = "OpenSteves${UUID.randomUUID()}"
         val connection = connection(url.toString()).apply {
@@ -202,7 +268,15 @@ class TourRepository private constructor(private val context: Context) {
                 field("model", model)
                 field("response_format", "verbose_json")
                 field("timestamp_granularities[]", "segment")
-                output.write("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"tour.mp3\"\r\nContent-Type: audio/mpeg\r\n\r\n".toByteArray())
+                val mime = when (audioExtension) {
+                    "mp3" -> "audio/mpeg"
+                    "m4a" -> "audio/mp4"
+                    "aac" -> "audio/aac"
+                    "wav" -> "audio/wav"
+                    "flac" -> "audio/flac"
+                    else -> "audio/ogg"
+                }
+                output.write("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.$audioExtension\"\r\nContent-Type: $mime\r\n\r\n".toByteArray())
                 audio.inputStream().use { input ->
                     val buffer = ByteArray(64 * 1024)
                     while (true) {
@@ -239,6 +313,7 @@ class TourRepository private constructor(private val context: Context) {
     }
 
     internal suspend fun installDownload(tour: Tour, onProgress: suspend (Int) -> Unit) = withContext(Dispatchers.IO) {
+        require(!tour.isCustom) { "Custom audio is shared through Bluetooth or imported from a file." }
         initialized.await()
         lock(tour.id).withLock {
             val partial = File(root, "${tour.id}-${tour.version}.partial")
@@ -266,7 +341,7 @@ class TourRepository private constructor(private val context: Context) {
                     val installed = _installed.value[tourId] ?: throw IOException("This tour is no longer downloaded")
                     require(installed.audioHash == expectedHash) { "The host's audio changed. Rejoin the session." }
                     val folder = directory(tourId) ?: throw IOException("The downloaded tour is missing")
-                    val audio = File(folder, "${installed.tour.baseFileName}.mp3")
+                    val audio = File(folder, installed.tour.audioFileName)
                     require(audio.isFile && audio.length() > 0 && audioHash(audio) == expectedHash) {
                         "The host's audio changed. Download the tour again."
                     }
@@ -282,44 +357,67 @@ class TourRepository private constructor(private val context: Context) {
         }
     }
 
-    internal suspend fun installSharedTour(tour: Tour, archive: File, expectedHash: String) = withContext(Dispatchers.IO) {
+    internal suspend fun installSharedTour(tour: Tour, archive: File, expectedHash: String): Tour = withContext(Dispatchers.IO) {
         initialized.await()
         val validatedTour = Tour.fromJson(tour.toJson())
         require(expectedHash.matches(Regex("[a-f0-9]{64}"))) { "Invalid shared audio hash" }
         require(archive.isFile && archive.length() in 1..Tour.MAX_BUNDLE_BYTES) { "Invalid shared tour archive" }
-        WorkManager.getInstance(context).cancelUniqueWork(workName(validatedTour.id)).result.get()
-        lock(validatedTour.id).withLock {
-            installArchive(validatedTour, archive, expectedHash)
-            deletePartialFiles(validatedTour.id)
+        if (validatedTour.isCustom) customImportMutex.withLock {
+            localAudioId(validatedTour.id, expectedHash)?.let { return@withLock _installed.value.getValue(it).tour }
+            val local = validatedTour.copy(id = customAudioId(expectedHash, validatedTour.id))
+            lock(local.id).withLock {
+                installArchive(local, archive, expectedHash)
+                local
+            }
+        } else {
+            WorkManager.getInstance(context).cancelUniqueWork(workName(validatedTour.id)).result.get()
+            lock(validatedTour.id).withLock {
+                installArchive(validatedTour, archive, expectedHash)
+                deletePartialFiles(validatedTour.id)
+                validatedTour
+            }
         }
     }
 
+    private fun customAudioId(hash: String, preferred: Int? = null): Int {
+        var id = preferred ?: -(hash.take(8).toLong(16).rem(Int.MAX_VALUE) + 1).toInt()
+        while (_installed.value.containsKey(id)) id = if (id == Int.MIN_VALUE) -1 else id - 1
+        return id
+    }
+
+    private fun newStage(id: Int): File = File(root, "$id/bundle-${UUID.randomUUID()}").apply {
+        require(mkdirs()) { "Could not create audio storage" }
+    }
+
     private suspend fun installArchive(tour: Tour, archive: File, expectedHash: String? = null) {
-        val parent = File(root, tour.id.toString()).apply { mkdirs() }
-        val stage = File(parent, "bundle-${UUID.randomUUID()}").apply { mkdirs() }
+        val stage = newStage(tour.id)
         var published = false
         try {
             BundleArchive.extract(tour, archive, stage)
-            val audio = File(stage, "${tour.baseFileName}.mp3")
+            val audio = File(stage, tour.audioFileName)
             require(audio.isFile && audio.length() > 0) { "The bundle has no audio file" }
             val hash = audioHash(audio)
             require(expectedHash == null || hash == expectedHash) { "The shared audio does not match the host's audio" }
-            val old = directory(tour.id)
-            if (_installed.value[tour.id]?.audioHash == hash) {
-                old?.let { File(it, "subtitles.vtt") }?.takeIf(File::isFile)
-                    ?.copyTo(File(stage, "subtitles.vtt"), overwrite = true)
-            }
-            val size = stage.walkTopDown().filter(File::isFile).sumOf(File::length)
-            val metadata = JSONObject().put("tour", tour.toJson()).put("directory", stage.name)
-                .put("sizeBytes", size).put("audioHash", hash)
-            currentCoroutineContext().ensureActive()
-            atomicWrite(File(parent, "install.json"), metadata.toString())
-            _installed.update { it + (tour.id to InstalledTour(tour, size, hash, stage.name)) }
+            publishInstall(tour, stage, hash)
             published = true
-            old?.deleteRecursively()
         } finally {
             if (!published) stage.deleteRecursively()
         }
+    }
+
+    private suspend fun publishInstall(tour: Tour, stage: File, hash: String) {
+        val old = directory(tour.id)
+        if (_installed.value[tour.id]?.audioHash == hash) {
+            old?.let { File(it, "subtitles.vtt") }?.takeIf(File::isFile)
+                ?.copyTo(File(stage, "subtitles.vtt"), overwrite = true)
+        }
+        val size = stage.walkTopDown().filter(File::isFile).sumOf(File::length)
+        val metadata = JSONObject().put("tour", tour.toJson()).put("directory", stage.name)
+            .put("sizeBytes", size).put("audioHash", hash)
+        currentCoroutineContext().ensureActive()
+        atomicWrite(File(stage.parentFile, "install.json"), metadata.toString())
+        _installed.update { it + (tour.id to InstalledTour(tour, size, hash, stage.name)) }
+        runCatching { old?.deleteRecursively() }
     }
 
     private suspend fun audioHash(audio: File): String = audio.inputStream().use { input ->
@@ -416,7 +514,11 @@ class TourRepository private constructor(private val context: Context) {
             val result = buildList {
                 root.keys().forEach { region ->
                     val tracks = root.getJSONObject(region)
-                    tracks.keys().forEach { title -> add(Tour.fromJson(tracks.getJSONObject(title), region)) }
+                    tracks.keys().forEach { title ->
+                        val tour = Tour.fromJson(tracks.getJSONObject(title), region)
+                        require(!tour.isCustom) { "Invalid catalog audio source" }
+                        add(tour)
+                    }
                 }
             }
             require(result.isNotEmpty() && result.size <= 20_000 && result.distinctBy { it.id }.size == result.size) { "Invalid tour catalog" }

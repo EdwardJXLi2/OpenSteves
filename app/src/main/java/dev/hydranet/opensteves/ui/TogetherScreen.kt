@@ -31,6 +31,8 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.outlined.Bluetooth
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ChevronRight
@@ -204,7 +206,7 @@ internal fun TogetherScreen(
                     if (host && state.peers.isEmpty()) {
                         OutlinedButton(shape = MaterialTheme.shapes.small, colors = TourButtonDefaults.outlinedColors(), onClick = ::openBluetoothSettings, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text("Bluetooth settings") }
                     }
-                    OutlinedButton(shape = MaterialTheme.shapes.small, colors = TourButtonDefaults.outlinedColors(), onClick = onOpenPlayer, enabled = current != null, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text("Back to tour") }
+                    OutlinedButton(shape = MaterialTheme.shapes.small, colors = TourButtonDefaults.outlinedColors(), onClick = onOpenPlayer, enabled = current != null, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text(if (current?.isCustom == true) "Back to player" else "Back to tour") }
                     if (host || state.peers.isNotEmpty()) {
                         OutlinedButton(shape = MaterialTheme.shapes.small, colors = TourButtonDefaults.outlinedColors(), onClick = playback::stop, enabled = current != null, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text("Stop playback for everyone") }
                     }
@@ -260,7 +262,7 @@ internal fun TogetherScreen(
                             SessionTour(repository, current, null, onOpenPlayer, null, framed = false)
                             Button(shape = MaterialTheme.shapes.small, onClick = onStartSession, enabled = !startingSession, modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 16.dp).height(48.dp)) { Text(if (startingSession) "Starting session…" else "Start a session") }
                         } else {
-                            Text("Start a tour from Explore first.", Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+                            Text("Choose audio from Explore first.", Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
                         }
                     }
                 }
@@ -331,12 +333,13 @@ private fun SessionTour(repository: TourRepository, tour: Tour, player: Playback
         modifier = if (framed) Modifier.padding(horizontal = 16.dp) else Modifier) {
         Column {
             Row(Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                TourThumbnail(artwork, Modifier.size(52.dp).clip(RoundedCornerShape(4.dp)))
+                TourThumbnail(artwork, Modifier.size(52.dp).clip(RoundedCornerShape(4.dp)),
+                    fallbackIcon = if (tour.isCustom) Icons.Default.MusicNote else Icons.Default.AccountBalance)
                 Column(Modifier.weight(1f).padding(start = 14.dp)) {
                     Text(displayTitle(tour), style = MaterialTheme.typography.titleMedium)
-                    Text("${tourLocation(tour)} / Downloaded", Modifier.padding(top = 4.dp), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    Text(listOf(tourLocation(tour), "Downloaded").filter(String::isNotBlank).joinToString(" / "), Modifier.padding(top = 4.dp), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                 }
-                Icon(Icons.Outlined.ChevronRight, "Back to tour", tint = colors.primary, modifier = Modifier.size(20.dp))
+                Icon(Icons.Outlined.ChevronRight, if (tour.isCustom) "Back to player" else "Back to tour", tint = colors.primary, modifier = Modifier.size(20.dp))
             }
             if (player != null && onToggle != null) {
                 HorizontalDivider(color = colors.outlineVariant)

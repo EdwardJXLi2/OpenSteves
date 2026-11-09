@@ -34,6 +34,7 @@ import dev.hydranet.opensteves.playback.PlaybackConnection
 import dev.hydranet.opensteves.session.SessionManager
 import dev.hydranet.opensteves.ui.theme.AppThemeMode
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -63,6 +64,8 @@ fun TourApp(
     var startingSession by remember { mutableStateOf(false) }
     var pendingSessionTourId by rememberSaveable { mutableStateOf<Int?>(null) }
     var refreshing by remember { mutableStateOf(false) }
+    var importing by remember { mutableStateOf(false) }
+    var importJob by remember { mutableStateOf<Job?>(null) }
     var preparingSessionDownload by remember { mutableStateOf(false) }
     var sessionDownloadError by remember(group.requiredTourId) { mutableStateOf<String?>(null) }
     val savedScreens = rememberSaveableStateHolder()
@@ -75,6 +78,7 @@ fun TourApp(
         }
     }
     fun download(tour: Tour) {
+        if (tour.isCustom) return
         if (playback.state.value.tourId == tour.id && repository.installed.value.containsKey(tour.id)) {
             report("Stop this tour before updating its download.")
         } else {
@@ -96,13 +100,32 @@ fun TourApp(
     }
     fun play(tour: Tour, positionMs: Long? = null) {
         if (session.state.value.role != "none" && playback.state.value.tourId != tour.id) {
-            report("Leave the current session to play a different tour.")
+            report("Leave the current session to play different audio.")
             return
         }
         notificationPermission()
         playback.play(tour, positionMs)
         playerTourId = tour.id
         navigate(1)
+    }
+
+    val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null && !importing) {
+            importing = true
+            importJob = scope.launch {
+                try {
+                    repository.importAudio(uri)
+                    navigate(0)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    report(error.message ?: "Could not import this audio file.")
+                } finally {
+                    importing = false
+                    importJob = null
+                }
+            }
+        }
     }
 
     fun startSession(tour: Tour) {
@@ -183,7 +206,7 @@ fun TourApp(
                     ),
                     title = {
                         Text(
-                            if (selected != null) "Tour details" else when (screen) {
+                            if (selected != null) { if (selected.isCustom) "Audio details" else "Tour details" } else when (screen) {
                                 1 -> "Playing"
                                 2 -> "Together"
                                 else -> "Explore"
@@ -205,16 +228,16 @@ fun TourApp(
                         } else if (selected != null && installed.containsKey(selected.id)) {
                             IconButton(onClick = {
                                 when {
-                                    player.tourId == selected.id && group.role != "none" -> report("End the session and stop this tour before deleting its download.")
-                                    player.tourId == selected.id -> report("Stop this tour before deleting its download.")
+                                    player.tourId == selected.id && group.role != "none" -> report("End the session and stop playback before deleting this audio.")
+                                    player.tourId == selected.id -> report("Stop playback before deleting this audio.")
                                     downloads[selected.id]?.let { it.error == null } == true -> report("Cancel the download before deleting this tour.")
                                     else -> deletion = selected
                                 }
-                            }) { Icon(Icons.Outlined.DeleteOutline, "Delete download", tint = MaterialTheme.colorScheme.error) }
+                            }) { Icon(Icons.Outlined.DeleteOutline, if (selected.isCustom) "Delete audio" else "Delete download", tint = MaterialTheme.colorScheme.error) }
                         } else if (selected == null && screen == 1 && playingTour != null) {
                             IconButton(onClick = { if (group.role != "none") navigate(2) else sharingDialog = true }, enabled = !startingSession && pendingSessionTourId == null) {
                                 if (startingSession) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-                                else Icon(Icons.Outlined.Group, if (group.role != "none") "Go to session" else "Share this tour")
+                                else Icon(Icons.Outlined.Group, if (group.role != "none") "Go to session" else "Share this audio")
                             }
                         } else if (selected == null && screen == 2 && !showingSessionDebug) {
                             IconButton(onClick = { showingSessionDebug = true }) {
@@ -240,7 +263,7 @@ fun TourApp(
                         fullScreen = playerFullScreen, onFullScreenChange = { playerFullScreen = it },
                         onPlay = { position -> play(playingTour, position) })
                 } else Column(Modifier.fillMaxSize().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                    EmptyState(Icons.Outlined.Headphones, "Nothing playing", "Start a tour from Explore to listen here.")
+                    EmptyState(Icons.Outlined.Headphones, "Nothing playing", "Choose audio from Explore to listen here.")
                 }
                 2 -> if (showingSessionDebug) {
                     SessionDebugScreen(session, onBack = { showingSessionDebug = false }, report = report)
@@ -248,6 +271,7 @@ fun TourApp(
                     onStartSession = { current?.let(::requestSession) }, onOpenPlayer = { navigate(1) }, report = report)
                 else -> savedScreens.SaveableStateProvider("explore") {
                     ExploreScreen(tours, installed, downloads, refreshing, repository, player.tourId,
+                        importing = importing, onImport = { audioPicker.launch(arrayOf("audio/*")) },
                         onSelect = { selectedId = it.id }, onDownload = ::download, onCancel = repository::cancelDownload,
                         onPlay = { play(it) })
                 }
@@ -255,9 +279,11 @@ fun TourApp(
         }
     }
     group.requiredTourId?.let { tourId ->
+        val customAudio = tourId < 0
         val tour = tours.find { it.id == tourId } ?: installed[tourId]?.tour
         val downloading = preparingSessionDownload || group.downloadingFromHost
         fun beginDownload(fromHost: Boolean) {
+            if (customAudio && !fromHost) return
             if (preparingSessionDownload || session.state.value.downloadingFromHost) return
             preparingSessionDownload = true
             sessionDownloadError = null
@@ -304,10 +330,12 @@ fun TourApp(
         }
         AlertDialog(
             onDismissRequest = { if (!preparingSessionDownload) session.dismissRequiredTour() },
-            title = { Text("Download tour?") },
+            title = { Text(if (customAudio) "Download audio?" else "Download tour?") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(when {
+                        customAudio -> group.requiredAudioTitle?.let { "Download “$it” from the host over Bluetooth to join." }
+                            ?: "Download the host’s audio over Bluetooth to join."
                         tour == null -> "You need the host’s tour on this phone to join."
                         installed.containsKey(tourId) -> "Your copy of “${tour.title}” differs from the host’s."
                         else -> "Download “${tour.title}” to join."
@@ -329,11 +357,15 @@ fun TourApp(
             },
             confirmButton = {
                 Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
+                    if (!customAudio) Button(
                         modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small,
                         enabled = !downloading, onClick = { beginDownload(fromHost = false) },
                     ) { Text("Download Locally (Recommended)", textAlign = TextAlign.Center) }
-                    OutlinedButton(
+                    if (customAudio) Button(
+                        modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small,
+                        enabled = !downloading && group.hostDownloadAvailable, onClick = { beginDownload(fromHost = true) },
+                    ) { Text("Download from Host") }
+                    else OutlinedButton(
                         modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small,
                         enabled = !downloading && group.hostDownloadAvailable, onClick = { beginDownload(fromHost = true) },
                     ) { Text("Download from Host") }
@@ -347,31 +379,44 @@ fun TourApp(
     }
     if (sharingDialog && playingTour != null) {
         AlertDialog(onDismissRequest = { sharingDialog = false }, title = { Text("Start a session?") },
-            text = { Text("Friends can join from Together on their paired phones and listen with you over Bluetooth.") },
+            text = { Text(if (playingTour.isCustom) "Friends can download this audio from your phone over Bluetooth and join playback."
+                else "Friends can join from Together on their paired phones and listen with you over Bluetooth.") },
             confirmButton = {
                 TextButton(shape = MaterialTheme.shapes.small, onClick = { requestSession(playingTour) }) {
-                    Text(if (player.tourId == playingTour.id && player.playing) "Start session" else "Start tour and share")
+                    Text(if (player.tourId == playingTour.id && player.playing) "Start session"
+                        else if (playingTour.isCustom) "Play and share" else "Start tour and share")
                 }
             },
             dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { sharingDialog = false }) { Text("Cancel") } },
         )
     }
     deletion?.let { tour ->
-        AlertDialog(onDismissRequest = { deletion = null }, title = { Text("Delete download?") },
-            text = { Text("The audio, map, and saved subtitles will be removed from this phone.") },
+        AlertDialog(onDismissRequest = { deletion = null }, title = { Text(if (tour.isCustom) "Delete audio?" else "Delete download?") },
+            text = { Text(if (tour.isCustom) "The imported audio and artwork will be removed from this phone."
+                else "The audio, map, and saved subtitles will be removed from this phone.") },
             confirmButton = {
                 TextButton(shape = MaterialTheme.shapes.small, onClick = {
                     deletion = null
                     scope.launch {
-                        if (playback.state.value.tourId == tour.id) snackbar.showSnackbar("Stop this tour before deleting it.")
+                        if (playback.state.value.tourId == tour.id) snackbar.showSnackbar("Stop playback before deleting this audio.")
                         else if (repository.downloads.value[tour.id]?.error == null && repository.downloads.value.containsKey(tour.id)) {
                             snackbar.showSnackbar("Cancel the download before deleting this tour.")
                         } else try { repository.delete(tour.id) }
-                        catch (error: Exception) { snackbar.showSnackbar(error.message ?: "Could not delete this tour.") }
+                        catch (error: Exception) { snackbar.showSnackbar(error.message ?: "Could not delete this audio.") }
                     }
                 }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { deletion = null }) { Text("Cancel") } },
+        )
+    }
+    if (importing) {
+        AlertDialog(
+            onDismissRequest = { importJob?.cancel() },
+            title = { Text("Importing audio…") },
+            text = { LinearProgressIndicator(Modifier.fillMaxWidth()) },
+            confirmButton = {
+                TextButton(onClick = { importJob?.cancel() }) { Text("Cancel") }
+            },
         )
     }
 }

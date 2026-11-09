@@ -87,7 +87,8 @@ class PlaybackService : MediaSessionService(), SessionPlayback {
                     if (customCommand.customAction != OPEN_TOUR || controller.packageName != packageName) {
                         return Futures.immediateFuture(SessionResult(SessionError.ERROR_NOT_SUPPORTED))
                     }
-                    val id = args.getInt("tourId", -1)
+                    if (!args.containsKey("tourId")) return Futures.immediateFuture(SessionResult(SessionError.ERROR_BAD_VALUE))
+                    val id = args.getInt("tourId")
                     if (groups.state.value.role != "none") {
                         if (player.currentMediaItem?.mediaId == id.toString()) groups.request(PlaybackCommand("play"))
                         else return Futures.immediateFuture(SessionResult(SessionError.ERROR_INVALID_STATE))
@@ -110,7 +111,9 @@ class PlaybackService : MediaSessionService(), SessionPlayback {
             saveProgress()
             player.setMediaItem(MediaItem.Builder().setMediaId(id.toString()).setUri(android.net.Uri.fromFile(audio))
                 .setMediaMetadata(MediaMetadata.Builder().setTitle(installed.tour.title)
-                    .setArtist("Rick Steves Audio Europe").setAlbumTitle(installed.tour.region).build()).build())
+                    .setArtist(if (installed.tour.isCustom) installed.tour.artist.takeIf(String::isNotBlank) else "Rick Steves Audio Europe")
+                    .setAlbumTitle(if (installed.tour.isCustom) installed.tour.album.takeIf(String::isNotBlank) else installed.tour.region)
+                    .setArtworkUri(repository.imageFile(id)?.let(android.net.Uri::fromFile)).build()).build())
         }
         player.seekTo(position.coerceAtLeast(0))
         if (player.playbackState == Player.STATE_IDLE || player.playbackState == Player.STATE_ENDED) player.prepare()
@@ -124,11 +127,10 @@ class PlaybackService : MediaSessionService(), SessionPlayback {
             player.playWhenReady && player.playbackState != Player.STATE_ENDED, player.playbackParameters.speed)
     }
 
-    override fun hasAudio(tourId: Int, hash: String): Boolean =
-        repository.installed.value[tourId]?.audioHash == hash && repository.audioFile(tourId) != null
+    override fun localAudioId(tourId: Int, hash: String): Int? = repository.localAudioId(tourId, hash)
 
     override fun apply(snapshot: PlaybackSnapshot, seek: Boolean) {
-        if (!hasAudio(snapshot.tourId, snapshot.hash)) return
+        if (localAudioId(snapshot.tourId, snapshot.hash) != snapshot.tourId) return
         if (!snapshot.playing) {
             if (SystemClock.elapsedRealtime() >= interruptionDeadline) interrupted = false
             if (player.playWhenReady) player.pause()

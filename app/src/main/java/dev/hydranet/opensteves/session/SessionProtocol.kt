@@ -6,6 +6,7 @@ data class SessionState(
     val peers: List<SessionPeer> = emptyList(),
     val error: String? = null,
     val requiredTourId: Int? = null,
+    val requiredAudioTitle: String? = null,
     val hostDownloadAvailable: Boolean = false,
     val downloadingFromHost: Boolean = false,
     val hostDownloadProgress: Int? = null,
@@ -32,7 +33,7 @@ interface SessionPlayback {
     fun snapshot(): PlaybackSnapshot?
     fun diagnostics(): PlaybackDiagnostics
     fun isReady(): Boolean
-    fun hasAudio(tourId: Int, hash: String): Boolean
+    fun localAudioId(tourId: Int, hash: String): Int?
     fun apply(snapshot: PlaybackSnapshot, seek: Boolean = true)
     fun pause()
 }

@@ -22,6 +22,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Subject
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -29,6 +30,8 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -56,6 +59,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -68,12 +72,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 
-internal fun displayTitle(tour: Tour): String = tour.title.substringAfter(" — ")
+internal fun displayTitle(tour: Tour): String = if (tour.isCustom) tour.title else tour.title.substringAfter(" — ")
 
 internal fun tourLocation(tour: Tour): String =
-    if (" — " in tour.title) tour.title.substringBefore(" — ") else tour.region
+    if (tour.isCustom) listOf(tour.artist, tour.album).filter(String::isNotBlank).joinToString(" / ")
+    else if (" — " in tour.title) tour.title.substringBefore(" — ") else tour.region
 
 private fun duration(tour: Tour): String {
+    if (tour.isCustom) return if (tour.durationMs > 0) time(tour.durationMs) else ""
     val text = tour.details.substringBefore('|').trim()
     return Regex("^(\\d+)\\s*m(?:in(?:s)?)?$", RegexOption.IGNORE_CASE).matchEntire(text)
         ?.let { "${it.groupValues[1]} min" } ?: text
@@ -87,6 +93,8 @@ internal fun ExploreScreen(
     refreshing: Boolean,
     repository: TourRepository,
     currentId: Int?,
+    importing: Boolean,
+    onImport: () -> Unit,
     onSelect: (Tour) -> Unit,
     onDownload: (Tour) -> Unit,
     onCancel: (Int) -> Unit,
@@ -221,6 +229,25 @@ internal fun ExploreScreen(
                 )
             }
         }
+        item(key = "custom-heading") { LibrarySection("Custom audio") }
+        item(key = "import-audio") {
+            Row(
+                Modifier.fillMaxWidth().clickable(enabled = !importing, role = Role.Button, onClick = onImport)
+                    .padding(start = 20.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TourThumbnail(null, Modifier.size(44.dp), fallbackIcon = Icons.Default.MusicNote)
+                Text(
+                    "Import audio",
+                    Modifier.weight(1f).padding(start = 14.dp, end = 4.dp),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (importing) 0.38f else 1f),
+                )
+                Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Default.Add, null, tint = MaterialTheme.colorScheme.primary.copy(alpha = if (importing) 0.38f else 1f))
+                }
+            }
+        }
     }
 }
 
@@ -242,7 +269,7 @@ private fun CatalogRow(
         downloading -> "Downloading ${download.progress.coerceIn(0, 100)}%"
         download?.error != null -> "Download failed"
         updating -> "Update available"
-        installed != null -> "${bytes(installed.sizeBytes)} / ${if (current) "Current tour" else "Downloaded"}"
+        installed != null -> "${bytes(installed.sizeBytes)} / ${if (current) { if (tour.isCustom) "Current audio" else "Current tour" } else "Downloaded"}"
         else -> bytes(tour.bytes)
     }
     Column {
@@ -253,6 +280,10 @@ private fun CatalogRow(
             LibraryArtwork(tour, installed, repository, Modifier.size(44.dp))
             Column(Modifier.weight(1f).padding(start = 14.dp, end = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(displayTitle(tour), style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (tour.isCustom && tourLocation(tour).isNotBlank()) Text(
+                    tourLocation(tour), style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
                 Text(
                     listOf(duration(tour), status).filter(String::isNotBlank).joinToString(" / "),
                     style = MaterialTheme.typography.bodySmall,
@@ -261,7 +292,7 @@ private fun CatalogRow(
             }
             when {
                 downloading -> IconButton(onClick = onCancel, colors = TourButtonDefaults.iconColors()) { Icon(Icons.Default.Close, "Cancel download") }
-                installed == null || updating -> IconButton(onClick = onDownload) {
+                !tour.isCustom && (installed == null || updating) -> IconButton(onClick = onDownload) {
                     Icon(if (download?.error != null) Icons.Default.Refresh else Icons.Default.Download, "Download ${displayTitle(tour)}", tint = MaterialTheme.colorScheme.primary)
                 }
                 else -> IconButton(onClick = onPlay) {
@@ -306,7 +337,7 @@ internal fun TourInfoScreen(
         item(key = "artwork") { LibraryArtwork(tour, installed, repository, Modifier.size(if (installed != null) 132.dp else 72.dp)) }
         item(key = "title") {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(tourLocation(tour), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (tourLocation(tour).isNotBlank()) Text(tourLocation(tour), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(displayTitle(tour), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Medium)
                 Text(listOf(tour.type, duration(tour), bytes(tour.bytes)).filter(String::isNotBlank).joinToString(" / "), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -319,9 +350,10 @@ internal fun TourInfoScreen(
                         Text("Available offline", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
                     }
                     Button(shape = MaterialTheme.shapes.small, onClick = if (loaded) onOpenPlayer else onPlay, enabled = canPlay, modifier = Modifier.fillMaxWidth().height(48.dp)) {
-                        Text(if (loaded) "Back to tour" else "Start tour")
+                        Text(if (tour.isCustom) { if (loaded) "Back to player" else "Play audio" }
+                            else if (loaded) "Back to tour" else "Start tour")
                     }
-                    if (sessionActive && !loaded) Text("Leave the session to play a different tour.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (sessionActive && !loaded) Text("Leave the session to play different audio.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (downloading) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -330,11 +362,11 @@ internal fun TourInfoScreen(
                     }
                     LinearProgressIndicator(progress = { download.progress.coerceIn(0, 100) / 100f }, modifier = Modifier.fillMaxWidth())
                     TextButton(shape = MaterialTheme.shapes.small, onClick = onCancel, modifier = Modifier.align(Alignment.End)) { Text("Cancel download") }
-                } else if (installed == null) {
+                } else if (installed == null && !tour.isCustom) {
                     Button(shape = MaterialTheme.shapes.small, onClick = onDownload, modifier = Modifier.fillMaxWidth().height(48.dp)) {
                         Text(if (download?.error != null) "Retry download / ${bytes(tour.bytes)}" else "Download tour / ${bytes(tour.bytes)}")
                     }
-                } else if (updateAvailable) {
+                } else if (updateAvailable && !tour.isCustom) {
                     TextButton(shape = MaterialTheme.shapes.small, onClick = onDownload, enabled = !loaded, modifier = Modifier.fillMaxWidth()) { Text("Download update / ${bytes(tour.bytes)}") }
                     if (loaded) Text("Stop this tour before updating its download.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -344,11 +376,11 @@ internal fun TourInfoScreen(
         if (description.isNotEmpty()) item(key = "description") {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Text("About this tour", style = MaterialTheme.typography.titleMedium)
+                Text(if (tour.isCustom) "About this audio" else "About this tour", style = MaterialTheme.typography.titleMedium)
                 Text(description, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        if (installed != null) item(key = "assets") {
+        if (installed != null && !tour.isCustom) item(key = "assets") {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Text("Included in the download", style = MaterialTheme.typography.titleMedium)
                 (listOf("Audio tour" to Icons.Default.Headphones) + assets).forEach { (label, icon) ->
@@ -367,7 +399,7 @@ private fun LibraryArtwork(tour: Tour, installed: InstalledTour?, repository: To
     val file by produceState<File?>(null, tour.id, installed?.directoryName) {
         value = if (installed == null) null else withContext(Dispatchers.IO) { repository.imageFile(tour.id) }
     }
-    TourThumbnail(file, modifier)
+    TourThumbnail(file, modifier, fallbackIcon = if (tour.isCustom) Icons.Default.MusicNote else Icons.Default.AccountBalance)
 }
 
 @Composable
